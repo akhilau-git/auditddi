@@ -1,4 +1,4 @@
-"""Pair-level applicability-domain scoring for PxDDI cold-start audit.
+"""Pair-level applicability-domain scoring for AuditDDI cold-start audit.
 
 This module extends the drug-level Tanimoto applicability domain to the
 pair level.  A drug pair (A, B) can simultaneously have:

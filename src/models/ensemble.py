@@ -1,4 +1,4 @@
-"""Safe combination helpers for fixed-split PxDDI research ensembles.
+"""Safe combination helpers for fixed-split AuditDDI research ensembles.
 
 The ensemble is deliberately an offline research artifact.  It never replaces
 the deployed checkpoint, and it refuses to average members that were evaluated
@@ -60,7 +60,7 @@ def validate_ensemble_member_manifests(manifests: list[dict[str, Any]]) -> dict[
     missing = [key for key in required_configuration_keys if key not in configuration]
     if missing:
         raise ValueError(f'First ensemble manifest lacks configuration fields: {missing}.')
-    reference = {
+    reference: dict[str, Any] = {
         'twosides_input_sha256': first.get('input_sha256', {}).get('twosides_edges'),
         'split_manifest_evidence': _split_manifest_evidence(first),
         **{key: configuration[key] for key in required_configuration_keys},
@@ -189,7 +189,7 @@ def summarize_safe_abstention(abstention: dict[str, np.ndarray]) -> dict[str, fl
         }
     reason_rows = abstention['safe_abstention_reasons']
     return {
-        'sample_count': int(count),
+        'sample_count': count,
         'safe_abstention_rate': float(np.asarray(abstention['safe_abstain'], dtype=bool).mean()),
         'conformal_abstention_rate': float(
             np.asarray(['conformal' in value for value in reason_rows], dtype=bool).mean()

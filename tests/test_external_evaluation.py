@@ -6,7 +6,7 @@ import torch
 
 from src.data_prep.molecular_motifs import MOTIF_FEATURE_DIM
 from src.data_prep.prepare_twosides import FEATURE_SCHEMA_RICH
-from src.models.ddi_model import PxDDIModel
+from src.models.ddi_model import AuditDDIModel, AuditDDIModel
 from src.training.evaluate_external_dataset import (
     build_external_records,
     file_sha256,
@@ -35,7 +35,7 @@ def test_external_evaluation_accepts_complete_provenance():
 
 def test_external_evaluation_loads_the_checkpoint_weights(tmp_path):
     """External evaluation must not score records with a random model."""
-    source_model = PxDDIModel(in_channels=13, hidden_channels=8).eval()
+    source_model = AuditDDIModel(in_channels=13, hidden_channels=8).eval()
     with torch.no_grad():
         for parameter in source_model.parameters():
             parameter.fill_(0.125)

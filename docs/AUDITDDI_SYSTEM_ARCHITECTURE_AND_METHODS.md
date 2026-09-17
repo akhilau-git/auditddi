@@ -41,7 +41,7 @@ This document serves as the exhaustive technical reference detailing:
 * **Input Modalities**: 2D Molecular Graph (GATv2) + 1,024-bit Morgan ECFP6 Fingerprint.
 * **Auxiliary Task**: FDA Adverse Event Reporting System (FAERS) toxicity prediction ($\lambda = 0.3$) across 281 audit-verified non-conflicting labels.
 * **Combination**: Pure chemical concatenation $[h_{graph} \parallel ECFP] \to E_{drug}$.
-* **The S1 Discovery**: While Phase 1 achieved state-of-the-art **0.923 AUROC** on transductive pairs and **0.726 AUROC** on S2 (two unseen drugs), it collapsed to **0.527 AUROC** on S1 (one known drug, one unseen drug). 
+* **The cold-start observation (historical and requiring rerun)**: Earlier development records associated a 0.923 transductive AUROC and 0.527 S1 AUROC with the Phase 1 model. In the current protocol, **S1 means both drugs unseen** and **S2 means exactly one drug unseen**. These historical figures must not be presented as reproducible final results until regenerated with the audited split-aware pipeline.
   * *Root Cause (Asymmetric Memorization Hypothesis)*: Dense 1,024-bit fingerprints allowed the network to memorize known training drugs. When paired with an unseen drug, the absolute difference vector $|E_{known} - E_{unseen}|$ caused an extreme mathematical manifold mismatch, forcing the classifier into random guessing.
 
 ### B. Why Phase 2 Combines With (Not Replaces) Phase 1
@@ -188,4 +188,4 @@ Evaluates true out-of-distribution generalization across disjoint Bemis-Murcko m
 | **Target Representation** | None | UniProt Primary Sequence + ESM-2 / 1D-CNN | **Integrated via Gated Fusion** |
 | **S1 Generalization** | Collapsed (0.527 AUROC) | Biologically Grounded (Resolved) | **Active Research Target** |
 | **Scaffold Generalization**| Random Split Only | Murcko Scaffold-Disjoint ($p = 5.50 \times 10^{-7}$) | **Verified in Google Colab** |
-| **Default Serving Model** | `backend/checkpoints/pxddi_model.pt` | Gated by `PXDDI_CHECKPOINT_PATH` | **Preserved for Offline Dev** |
+| **Default Serving Model** | `backend/checkpoints/auditddi_model.pt` | Gated by `AUDITDDI_CHECKPOINT_PATH` | **Preserved for Offline Dev** |

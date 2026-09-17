@@ -32,17 +32,17 @@ datasets and would unnecessarily compete with pretraining for CPU and Drive
 throughput.
 
 ```python
-%cd /content/drive/MyDrive/pxddi-data/pxddi
+%cd /content/drive/MyDrive/auditddi-data/auditddi
 !git pull origin main
 
-%env PXDDI_DATA_BASE=/content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/pxddi-data
-%env PXDDI_RESULTS_BASE=/content/drive/MyDrive/pxddi-results
+%env AUDITDDI_DATA_BASE=/content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data
+%env AUDITDDI_RESULTS_BASE=/content/drive/MyDrive/auditddi-results
 
 !python src/training/audit_external_knowledge.py
 ```
 
 The script looks first for either of these files below
-`$PXDDI_DATA_BASE/pharmgkb/`:
+`$AUDITDDI_DATA_BASE/pharmgkb/`:
 
 - `chemicals.tsv`
 - `chemicals.csv`
@@ -51,7 +51,7 @@ If your direct PharmGKB chemical catalogue has another name, set its exact
 path before running the audit:
 
 ```python
-%env PXDDI_PHARMGKB_CHEMICAL_CATALOG=/content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/pxddi-data/pharmgkb/PASTE_THE_ACTUAL_FILE_NAME.tsv
+%env AUDITDDI_PHARMGKB_CHEMICAL_CATALOG=/content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data/pharmgkb/PASTE_THE_ACTUAL_FILE_NAME.tsv
 ```
 
 ## Required audit outputs

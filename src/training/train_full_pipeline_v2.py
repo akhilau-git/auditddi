@@ -1,4 +1,4 @@
-"""Reproducible Colab training pipeline for the research-only PxDDI GNN.
+"""Reproducible Colab training pipeline for the research-only AuditDDI GNN.
 
 This script intentionally keeps ChemBERTa disabled. It saves all run-specific
 artifacts to Google Drive so a later paper result can be traced to its input
@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, cast, Literal, overload
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ import torch
 try:
     import torch.serialization
     if hasattr(torch.serialization, 'add_safe_globals'):
-        _safe_globals = [np.ndarray, np.dtype]
+        _safe_globals: list[Any] = [np.ndarray, np.dtype]
         try:
             import numpy._core.multiarray as _np_core
             _safe_globals.append(_np_core._reconstruct)
@@ -67,11 +67,22 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(REPOSITORY_SRC) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_SRC))
 
-DRIVE_BASE = Path(os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data'))
-# Training code must come from ``PROJECT_ROOT`` above (normally /content/pxddi
-# in Colab).  DRIVE_BASE intentionally contains data, prior checkpoints, and
-# outputs only.  Prepending a stale Drive checkout here would make a run's Git
-# revision disagree with the code it actually imported.
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base as _resolve_results_base_helper,
+    resolve_dataset_subpath,
+    get_auditddi_env,
+)
+
+# Importing this module supplies utilities to the unit tests and experiment
+# launchers.  Dataset discovery must remain strict when training starts, but
+# an absent Drive mount must not make those utilities impossible to import.
+DATA_BASE_RESOLUTION_ERROR: FileNotFoundError | None = None
+try:
+    DRIVE_BASE = resolve_data_base()
+except FileNotFoundError as error:
+    DATA_BASE_RESOLUTION_ERROR = error
+    DRIVE_BASE = Path(get_auditddi_env('DATA_BASE', PROJECT_ROOT / 'data'))
 
 from data_prep.prepare_twosides import (
     FEATURE_SCHEMA_LEGACY,
@@ -142,24 +153,31 @@ from evaluation.ddi_metrics import (
 
 
 def _positive_int_from_environment(name: str, default: int) -> int:
-    value = int(os.environ.get(name, default))
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    raw = get_auditddi_env(suffix, default)
+    value = int(raw)
     if value <= 0:
         raise ValueError(f'{name} must be a positive integer.')
     return value
 
 
 def _non_negative_int_from_environment(name: str, default: int) -> int:
-    value = int(os.environ.get(name, default))
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    raw = get_auditddi_env(suffix, default)
+    value = int(raw)
     if value < 0:
         raise ValueError(f'{name} must be zero or a positive integer.')
     return value
 
 
 def _boolean_from_environment(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    value = get_auditddi_env(suffix, default)
     if value is None:
         return default
-    normalized = value.strip().lower()
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
     if normalized in {'1', 'true', 'yes'}:
         return True
     if normalized in {'0', 'false', 'no'}:
@@ -168,14 +186,16 @@ def _boolean_from_environment(name: str, default: bool) -> bool:
 
 
 def _open_unit_interval_from_environment(name: str, default: float) -> float:
-    value = float(os.environ.get(name, default))
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    value = float(get_auditddi_env(suffix, default))
     if not 0 < value < 1:
         raise ValueError(f'{name} must lie strictly between zero and one.')
     return value
 
 
 def _closed_unit_interval_from_environment(name: str, default: float) -> float:
-    value = float(os.environ.get(name, default))
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    value = float(get_auditddi_env(suffix, default))
     if not 0 <= value <= 1:
         raise ValueError(f'{name} must lie between zero and one.')
     return value
@@ -186,41 +206,37 @@ def resolve_results_base(
     data_base: Path = DRIVE_BASE,
 ) -> Path:
     """Choose a writable output root independently of a shared data shortcut."""
-    if configured_path is None:
-        configured_path = os.environ.get('PXDDI_RESULTS_BASE')
-        if not configured_path and 'COLAB_RELEASE_TAG' in os.environ:
-            configured_path = '/content/drive/MyDrive/pxddi-results'
-    return Path(configured_path) if configured_path else data_base
+    return _resolve_results_base_helper(configured_path)
 
 
 # ``PXDDI_SEED`` remains the backwards-compatible one-knob default.  Ensemble
 # training can override the model and split seeds independently so its members
 # genuinely differ while evaluating exactly the same rows.
-SEED = _positive_int_from_environment('PXDDI_SEED', 42)
-MODEL_SEED = _positive_int_from_environment('PXDDI_MODEL_SEED', SEED)
-SPLIT_SEED = _positive_int_from_environment('PXDDI_SPLIT_SEED', SEED)
-DATA_CAP = _positive_int_from_environment('PXDDI_DATA_CAP', 200000)
-EPOCHS = _positive_int_from_environment('PXDDI_EPOCHS', 200)
-HIDDEN_CHANNELS = _positive_int_from_environment('PXDDI_HIDDEN_CHANNELS', 128)
-BATCH_SIZE = _positive_int_from_environment('PXDDI_BATCH_SIZE', 128)
+SEED = _positive_int_from_environment('AUDITDDI_SEED', 42)
+MODEL_SEED = _positive_int_from_environment('AUDITDDI_MODEL_SEED', SEED)
+SPLIT_SEED = _positive_int_from_environment('AUDITDDI_SPLIT_SEED', SEED)
+DATA_CAP = _positive_int_from_environment('AUDITDDI_DATA_CAP', 200000)
+EPOCHS = _positive_int_from_environment('AUDITDDI_EPOCHS', 200)
+HIDDEN_CHANNELS = _positive_int_from_environment('AUDITDDI_HIDDEN_CHANNELS', 128)
+BATCH_SIZE = _positive_int_from_environment('AUDITDDI_BATCH_SIZE', 128)
 EARLY_STOPPING_PATIENCE = _non_negative_int_from_environment(
-    'PXDDI_EARLY_STOPPING_PATIENCE', 30
+    'AUDITDDI_EARLY_STOPPING_PATIENCE', 30
 )
 EARLY_STOPPING_MIN_EPOCHS = _positive_int_from_environment(
-    'PXDDI_EARLY_STOPPING_MIN_EPOCHS', 40
+    'AUDITDDI_EARLY_STOPPING_MIN_EPOCHS', 40
 )
 if EARLY_STOPPING_MIN_EPOCHS > EPOCHS:
-    raise ValueError('PXDDI_EARLY_STOPPING_MIN_EPOCHS must not exceed PXDDI_EPOCHS.')
+    raise ValueError('AUDITDDI_EARLY_STOPPING_MIN_EPOCHS must not exceed PXDDI_EPOCHS.')
 MODEL_SELECTION_VALIDATION_FRACTION = _open_unit_interval_from_environment(
-    'PXDDI_MODEL_SELECTION_VALIDATION_FRACTION', 0.5
+    'AUDITDDI_MODEL_SELECTION_VALIDATION_FRACTION', 0.5
 )
-NEGATIVE_SAMPLING_STRATEGY = os.environ.get('PXDDI_NEGATIVE_SAMPLING_STRATEGY', 'degree_matched')
+NEGATIVE_SAMPLING_STRATEGY = os.environ.get('AUDITDDI_NEGATIVE_SAMPLING_STRATEGY', 'degree_matched')
 NEGATIVE_SAMPLING_PROTOCOL = os.environ.get(
-    'PXDDI_NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
+    'AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
 ).strip().lower()
 if NEGATIVE_SAMPLING_PROTOCOL not in {'split_aware_standard_v1', 'legacy_pre_split_v1'}:
     raise ValueError(
-        'PXDDI_NEGATIVE_SAMPLING_PROTOCOL must be split_aware_standard_v1 or '
+        'AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL must be split_aware_standard_v1 or '
         'legacy_pre_split_v1.'
     )
 NEGATIVE_LABEL_MEANING = (
@@ -230,7 +246,7 @@ NEGATIVE_LABEL_MEANING = (
 )
 USE_CHEMBERTA = False
 MODEL_ARCHITECTURE = os.environ.get(
-    'PXDDI_MODEL_ARCHITECTURE', MODEL_ARCHITECTURE_EDGE_AWARE
+    'AUDITDDI_MODEL_ARCHITECTURE', MODEL_ARCHITECTURE_EDGE_AWARE
 )
 if MODEL_ARCHITECTURE not in {
     MODEL_ARCHITECTURE_LEGACY,
@@ -240,7 +256,7 @@ if MODEL_ARCHITECTURE not in {
     MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
     MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
 }:
-    raise ValueError(f'Unsupported PXDDI_MODEL_ARCHITECTURE: {MODEL_ARCHITECTURE}.')
+    raise ValueError(f'Unsupported AUDITDDI_MODEL_ARCHITECTURE: {MODEL_ARCHITECTURE}.')
 USES_EDGE_FEATURES = MODEL_ARCHITECTURE in {
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MOTIF_EDGE_AWARE,
@@ -258,7 +274,7 @@ USE_CROSS_DRUG_ATTENTION = (
     MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE
 )
 MOTIF_HIDDEN_CHANNELS = _positive_int_from_environment(
-    'PXDDI_MOTIF_HIDDEN_CHANNELS', 32
+    'AUDITDDI_MOTIF_HIDDEN_CHANNELS', 32
 )
 FEATURE_SCHEMA = (
     FEATURE_SCHEMA_RICH
@@ -271,19 +287,26 @@ INPUT_FEATURE_DIM = (
     else LEGACY_NUM_ATOM_FEATURES
 )
 USE_TOXICITY_PAIR_FEATURES = _boolean_from_environment(
-    'PXDDI_USE_TOXICITY_PAIR_FEATURES', False
+    'AUDITDDI_USE_TOXICITY_PAIR_FEATURES', False
 )
-TOXICITY_LOSS_WEIGHT = float(os.environ.get('PXDDI_TOXICITY_LOSS_WEIGHT', '0.0'))
+TOXICITY_LOSS_WEIGHT = float(os.environ.get('AUDITDDI_TOXICITY_LOSS_WEIGHT', '0.0'))
 if TOXICITY_LOSS_WEIGHT < 0:
-    raise ValueError('PXDDI_TOXICITY_LOSS_WEIGHT must be non-negative.')
-EVALUATION_PROTOCOL = os.environ.get('PXDDI_EVALUATION_PROTOCOL', 'standard').strip().lower()
+    raise ValueError('AUDITDDI_TOXICITY_LOSS_WEIGHT must be non-negative.')
+EVALUATION_PROTOCOL = os.environ.get('AUDITDDI_EVALUATION_PROTOCOL', 'standard').strip().lower()
 if EVALUATION_PROTOCOL not in {'standard', 'scaffold_disjoint'}:
-    raise ValueError("PXDDI_EVALUATION_PROTOCOL must be 'standard' or 'scaffold_disjoint'.")
-BOOTSTRAP_RESAMPLES = _non_negative_int_from_environment('PXDDI_BOOTSTRAP_RESAMPLES', 1000)
-ERROR_ANALYSIS_MAX_ROWS = _positive_int_from_environment('PXDDI_ERROR_ANALYSIS_MAX_ROWS', 100)
+    raise ValueError("AUDITDDI_EVALUATION_PROTOCOL must be 'standard' or 'scaffold_disjoint'.")
+BOOTSTRAP_RESAMPLES = _non_negative_int_from_environment('AUDITDDI_BOOTSTRAP_RESAMPLES', 1000)
+ERROR_ANALYSIS_MAX_ROWS = _positive_int_from_environment('AUDITDDI_ERROR_ANALYSIS_MAX_ROWS', 100)
 
-TWOSIDES_EDGES = DRIVE_BASE / 'twosides' / 'drug_drug_edges.csv'
-TOXICITY_BRIDGE = DRIVE_BASE / 'checkpoints' / 'toxicity_smiles_bridge.csv'
+# Keep the module importable for unit tests and CI without a mounted Drive.
+# ``main`` raises the saved resolver error before training or evaluation can
+# read either placeholder path.
+if DATA_BASE_RESOLUTION_ERROR is None:
+    TWOSIDES_EDGES = resolve_dataset_subpath(DRIVE_BASE, 'twosides', 'drug_drug_edges.csv')
+    TOXICITY_BRIDGE = resolve_dataset_subpath(DRIVE_BASE, 'checkpoints', 'toxicity_smiles_bridge.csv')
+else:
+    TWOSIDES_EDGES = DRIVE_BASE / 'twosides' / 'drug_drug_edges.csv'
+    TOXICITY_BRIDGE = DRIVE_BASE / 'checkpoints' / 'toxicity_smiles_bridge.csv'
 RESULTS_BASE = resolve_results_base()
 DEFAULT_CHECKPOINT_PATH = (
     RESULTS_BASE / 'checkpoints' / 'auditddi_model.pt'
@@ -291,50 +314,52 @@ DEFAULT_CHECKPOINT_PATH = (
     else RESULTS_BASE / 'checkpoints' / 'candidates' / (
         'auditddi_memory_fusion_candidate.pt'
         if USE_NEIGHBOR_MEMORY
-        else 'pxddi_graph_fp_fusion_candidate.pt'
+        else 'auditddi_graph_fp_fusion_candidate.pt'
         if USE_FINGERPRINT_FEATURES
-        else 'pxddi_motif_edge_aware_candidate.pt'
+        else 'auditddi_motif_edge_aware_candidate.pt'
         if USE_MOTIF_FEATURES
-        else 'pxddi_cross_attention_edge_aware_candidate.pt'
+        else 'auditddi_cross_attention_edge_aware_candidate.pt'
         if USE_CROSS_DRUG_ATTENTION
-        else 'pxddi_edge_aware_candidate.pt'
+        else 'auditddi_edge_aware_candidate.pt'
     )
 )
-CHECKPOINT_PATH = Path(os.environ.get('PXDDI_CHECKPOINT_PATH', DEFAULT_CHECKPOINT_PATH))
-CHECKPOINT_PATH_WAS_EXPLICITLY_CONFIGURED = 'PXDDI_CHECKPOINT_PATH' in os.environ
+CHECKPOINT_PATH = Path(get_auditddi_env('CHECKPOINT_PATH', DEFAULT_CHECKPOINT_PATH))
+CHECKPOINT_PATH_WAS_EXPLICITLY_CONFIGURED = (
+    'AUDITDDI_CHECKPOINT_PATH' in os.environ or 'PXDDI_CHECKPOINT_PATH' in os.environ
+)
 PRETRAINED_ENCODER_PATH = (
-    Path(os.environ['PXDDI_PRETRAINED_ENCODER_PATH'])
-    if os.environ.get('PXDDI_PRETRAINED_ENCODER_PATH')
+    Path(get_auditddi_env('PRETRAINED_ENCODER_PATH'))
+    if get_auditddi_env('PRETRAINED_ENCODER_PATH')
     else None
 )
 if PRETRAINED_ENCODER_PATH is not None and not USES_EDGE_FEATURES:
     raise ValueError(
-        'PXDDI_PRETRAINED_ENCODER_PATH can initialize only a rich edge-aware '
+        'AUDITDDI_PRETRAINED_ENCODER_PATH can initialize only a rich edge-aware '
         'candidate, not the legacy GAT architecture.'
     )
 RUN_ID = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-ARTIFACTS_BASE = Path(os.environ.get('PXDDI_ARTIFACTS_BASE', RESULTS_BASE / 'artifacts'))
+ARTIFACTS_BASE = Path(get_auditddi_env('ARTIFACTS_BASE', RESULTS_BASE / 'artifacts'))
 RUN_ARTIFACTS_DIR = ARTIFACTS_BASE / f'run_{RUN_ID}'
 LATEST_RESULTS_DIR = Path(
-    os.environ.get('PXDDI_LATEST_RESULTS_DIR', RESULTS_BASE / 'latest_results')
+    get_auditddi_env('LATEST_RESULTS_DIR', RESULTS_BASE / 'latest_results')
 )
-PUBLISH_LATEST_RESULTS = _boolean_from_environment('PXDDI_PUBLISH_LATEST_RESULTS', True)
-EVALUATE_ONLY = _boolean_from_environment('PXDDI_EVALUATE_ONLY', False)
+PUBLISH_LATEST_RESULTS = _boolean_from_environment('AUDITDDI_PUBLISH_LATEST_RESULTS', True)
+EVALUATE_ONLY = _boolean_from_environment('AUDITDDI_EVALUATE_ONLY', False)
 if EVALUATE_ONLY and not CHECKPOINT_PATH_WAS_EXPLICITLY_CONFIGURED:
     raise ValueError(
-        'PXDDI_EVALUATE_ONLY requires an explicit PXDDI_CHECKPOINT_PATH. '
+        'AUDITDDI_EVALUATE_ONLY requires an explicit AUDITDDI_CHECKPOINT_PATH. '
         'Refusing to select an arbitrary candidate checkpoint.'
     )
 RUN_CANDIDATE_EXPLANATIONS = _boolean_from_environment(
-    'PXDDI_RUN_CANDIDATE_EXPLANATIONS', False
+    'AUDITDDI_RUN_CANDIDATE_EXPLANATIONS', False
 )
 EXPLANATION_SAMPLES_PER_SPLIT = _positive_int_from_environment(
-    'PXDDI_EXPLANATION_SAMPLES_PER_SPLIT', 4
+    'AUDITDDI_EXPLANATION_SAMPLES_PER_SPLIT', 4
 )
-EXPLANATION_TOP_K = _positive_int_from_environment('PXDDI_EXPLANATION_TOP_K', 5)
-CONFORMAL_ALPHA = _open_unit_interval_from_environment('PXDDI_CONFORMAL_ALPHA', 0.1)
+EXPLANATION_TOP_K = _positive_int_from_environment('AUDITDDI_EXPLANATION_TOP_K', 5)
+CONFORMAL_ALPHA = _open_unit_interval_from_environment('AUDITDDI_CONFORMAL_ALPHA', 0.1)
 APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY = _closed_unit_interval_from_environment(
-    'PXDDI_APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY', 0.4
+    'AUDITDDI_APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY', 0.4
 )
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -1050,7 +1075,7 @@ class GraphCache:
         }
 
 
-class PxDDIDataset(Dataset):
+class AuditDDIDataset(Dataset):
     """Graph pairs plus provenance retained for later prediction artifacts."""
 
     def __init__(
@@ -1130,6 +1155,9 @@ class PxDDIDataset(Dataset):
         return self.records[idx]
 
 
+PxDDIDataset = AuditDDIDataset
+
+
 def collate_fn(batch):
     graph_a = [item[0] for item in batch]
     graph_b = [item[1] for item in batch]
@@ -1171,7 +1199,7 @@ def build_loader(
     neighbor_memory: AuditableNeighborMemory | None = None,
     exclude_query_pair_from_memory: bool = False,
 ) -> DataLoader:
-    dataset = PxDDIDataset(
+    dataset = AuditDDIDataset(
         dataframe,
         toxicity_lookup,
         graph_cache=graph_cache,
@@ -1490,7 +1518,7 @@ def save_posthoc_validation_partition_artifact(
     artifact_dir: Path,
 ) -> dict[str, Any]:
     """Save the exact validation roles used by post-hoc analysis."""
-    if len(cast(PxDDIDataset, loader.dataset).metadata) != len(labels):
+    if len(cast(AuditDDIDataset, loader.dataset).metadata) != len(labels):
         raise RuntimeError('Validation provenance does not match post-hoc labels.')
     assignments = np.full(len(labels), 'not_assigned', dtype=object)
     for role, indices in partition['indices'].items():
@@ -1498,7 +1526,7 @@ def save_posthoc_validation_partition_artifact(
             assignments[indices] = assignments[indices] + '|' + role
         else:
             assignments[indices] = role
-    table = pd.DataFrame(cast(PxDDIDataset, loader.dataset).metadata)
+    table = pd.DataFrame(cast(AuditDDIDataset, loader.dataset).metadata)
     table['label'] = labels
     table['raw_prediction_score'] = raw_predictions
     table['calibrated_prediction_score'] = calibrated_predictions
@@ -1548,7 +1576,7 @@ def save_prediction_artifact(
     calibration: dict[str, Any],
     additional_columns: dict[str, Any] | None = None,
 ) -> Path:
-    metadata = cast(PxDDIDataset, loader.dataset).metadata
+    metadata = cast(AuditDDIDataset, loader.dataset).metadata
     if len(metadata) != len(labels):
         raise RuntimeError('Prediction provenance does not match the evaluated dataset.')
     table = pd.DataFrame(metadata)
@@ -1573,7 +1601,7 @@ def save_prediction_artifact(
 
 
 def generate_candidate_explanation_artifact(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     evaluation_data: dict[str, dict[str, Any]],
     explanation_dir: Path,
 ) -> dict[str, Any]:
@@ -1587,7 +1615,7 @@ def generate_candidate_explanation_artifact(
     if not RUN_CANDIDATE_EXPLANATIONS:
         return {
             'status': 'disabled',
-            'reason': 'Set PXDDI_RUN_CANDIDATE_EXPLANATIONS=1 to generate a bounded offline audit.',
+            'reason': 'Set AUDITDDI_RUN_CANDIDATE_EXPLANATIONS=1 to generate a bounded offline audit.',
             'method': EXPLANATION_METHOD,
         }
     if MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_LEGACY:
@@ -1629,7 +1657,7 @@ def generate_candidate_explanation_artifact(
         examples = []
         for index in selected_indices:
             graph_a, graph_b, *_ = loader.dataset.records[index]
-            metadata = cast(PxDDIDataset, loader.dataset).metadata[index]
+            metadata = cast(AuditDDIDataset, loader.dataset).metadata[index]
             example: dict[str, Any] = {
                 'dataset_index': index,
                 'source': metadata['source'],
@@ -1834,7 +1862,7 @@ def plot_benchmark_comparison(results: dict[str, dict[str, Any]], figure_dir: Pa
         values = [results[name][key] if results[name][key] is not None else np.nan for name in names]
         axis.bar(x + (index - 1) * width, values, width, label=label)
     axis.set(
-        title='PxDDI evaluation by split', xlabel='Evaluation split', ylabel='Score',
+        title='AuditDDI evaluation by split', xlabel='Evaluation split', ylabel='Score',
         xticks=x, xticklabels=names, ylim=(0, 1),
     )
     axis.legend()
@@ -1861,7 +1889,7 @@ def plot_toxicity_bridge_coverage(summary: dict[str, Any], figure_dir: Path) -> 
     _save_figure(figure, figure_dir / 'toxicity_bridge_coverage')
 
 
-def model_summary(model: PxDDIModel) -> dict[str, Any]:
+def model_summary(model: AuditDDIModel) -> dict[str, Any]:
     """Return a compact architecture and parameter summary for the run manifest."""
     total_parameters = sum(parameter.numel() for parameter in model.parameters())
     trainable_parameters = sum(
@@ -1916,6 +1944,24 @@ def model_summary(model: PxDDIModel) -> dict[str, Any]:
     }
 
 
+@overload
+def _prepare_positive_edges(
+    audit_dir: Path,
+    sampling_seed: int = ...,
+    *,
+    return_all_clean_positives: Literal[False] = ...,
+) -> tuple[pd.DataFrame, dict[str, Any]]: ...
+
+
+@overload
+def _prepare_positive_edges(
+    audit_dir: Path,
+    sampling_seed: int = ...,
+    *,
+    return_all_clean_positives: Literal[True],
+) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]: ...
+
+
 def _prepare_positive_edges(
     audit_dir: Path,
     sampling_seed: int = SPLIT_SEED,
@@ -1966,6 +2012,8 @@ def _prepare_positive_edges(
 
 def main() -> None:
     global CHECKPOINT_PATH
+    if DATA_BASE_RESOLUTION_ERROR is not None:
+        raise DATA_BASE_RESOLUTION_ERROR
     set_reproducibility(MODEL_SEED)
     print(f'Training on: {DEVICE}')
     if DEVICE.type != 'cuda':
@@ -2136,23 +2184,23 @@ def main() -> None:
         **test_loaders,
     }
     unexpected_skips = {
-        name: cast(PxDDIDataset, loader.dataset).skipped_count
+        name: cast(AuditDDIDataset, loader.dataset).skipped_count
         for name, loader in all_loaders.items()
-        if cast(PxDDIDataset, loader.dataset).skipped_count
+        if cast(AuditDDIDataset, loader.dataset).skipped_count
     }
     if unexpected_skips:
         raise RuntimeError(
             'Graph validation changed between the pre-split audit and dataset construction: '
             f'{unexpected_skips}. Review the input audit before training.'
         )
-    validation_labels = np.asarray([record['label'] for record in cast(PxDDIDataset, validation_loader.dataset).metadata])
+    validation_labels = np.asarray([record['label'] for record in cast(AuditDDIDataset, validation_loader.dataset).metadata])
     if len(validation_labels) == 0 or len(np.unique(validation_labels)) < 2:
         raise ValueError(
             'Model-selection validation is unusable after SMILES validation; '
             'adjust the data split.'
         )
     posthoc_validation_labels = np.asarray([
-        record['label'] for record in cast(PxDDIDataset, posthoc_validation_loader.dataset).metadata
+        record['label'] for record in cast(AuditDDIDataset, posthoc_validation_loader.dataset).metadata
     ])
     if len(posthoc_validation_labels) == 0 or len(np.unique(posthoc_validation_labels)) < 2:
         raise ValueError(
@@ -2216,15 +2264,20 @@ def main() -> None:
         torch.cuda.reset_peak_memory_stats(DEVICE)
         torch.cuda.synchronize(DEVICE)
     training_started_at = time.perf_counter()
+    evaluation_checkpoint: dict[str, Any] = {}
     if EVALUATE_ONLY:
         if not CHECKPOINT_PATH.is_file():
             raise FileNotFoundError(
-                'PXDDI_EVALUATE_ONLY checkpoint does not exist: '
+                'AUDITDDI_EVALUATE_ONLY checkpoint does not exist: '
                 f'{CHECKPOINT_PATH}.'
             )
-        evaluation_checkpoint = torch.load(
+        loaded_eval = torch.load(
             CHECKPOINT_PATH, map_location='cpu', weights_only=False
         )
+        if isinstance(loaded_eval, dict):
+            evaluation_checkpoint = loaded_eval
+        else:
+            raise TypeError('Loaded checkpoint must be a dictionary.')
         validate_checkpoint_for_evaluation(
             evaluation_checkpoint, manifest, split_manifest
         )
@@ -2355,7 +2408,7 @@ def main() -> None:
     # the checkpoint to point at its newly created report copy.
     plot_training_curves(history, figure_dir)
     history_summary = save_training_history(history, RUN_ARTIFACTS_DIR)
-    checkpoint = (
+    checkpoint: dict[str, Any] = (
         evaluation_checkpoint
         if EVALUATE_ONLY
         else torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
@@ -2405,7 +2458,7 @@ def main() -> None:
     )
     training_smiles = {
         metadata[column]
-        for metadata in cast(PxDDIDataset, train_loader.dataset).metadata
+        for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
         for column in ('source', 'target')
     }
     applicability_domain = MorganApplicabilityDomain(
@@ -2479,8 +2532,8 @@ def main() -> None:
         )
         conformal_sets = conformal_prediction_sets(calibrated_predictions, conformal)
         applicability_scores = applicability_domain.score_pairs(
-            [metadata['source'] for metadata in cast(PxDDIDataset, loader.dataset).metadata],
-            [metadata['target'] for metadata in cast(PxDDIDataset, loader.dataset).metadata],
+            [metadata['source'] for metadata in cast(AuditDDIDataset, loader.dataset).metadata],
+            [metadata['target'] for metadata in cast(AuditDDIDataset, loader.dataset).metadata],
         )
         additional_prediction_columns = {
             'predictive_entropy_nats': predictive_entropy(calibrated_predictions),
@@ -2504,7 +2557,7 @@ def main() -> None:
         )
         metrics['prediction_path'] = str(prediction_path)
         metrics['prediction_sha256'] = get_file_hash(prediction_path)
-        metrics['skipped_invalid_smiles'] = cast(PxDDIDataset, loader.dataset).skipped_count
+        metrics['skipped_invalid_smiles'] = cast(AuditDDIDataset, loader.dataset).skipped_count
         metrics['test_set_bootstrap_95ci'] = bootstrap_confidence_intervals(
             labels,
             calibrated_predictions,
@@ -2539,7 +2592,7 @@ def main() -> None:
             raw_predictions=raw_predictions,
         )
         metrics['error_analysis'] = save_confident_error_analysis(
-            cast(PxDDIDataset, loader.dataset).metadata,
+            cast(AuditDDIDataset, loader.dataset).metadata,
             labels,
             raw_predictions,
             calibrated_predictions,
@@ -2560,11 +2613,11 @@ def main() -> None:
             # SMILES stored for pair-level OOD audit
             'source_smiles': [
                 metadata['source']
-                for metadata in cast(PxDDIDataset, loader.dataset).metadata
+                for metadata in cast(AuditDDIDataset, loader.dataset).metadata
             ],
             'target_smiles': [
                 metadata['target']
-                for metadata in cast(PxDDIDataset, loader.dataset).metadata
+                for metadata in cast(AuditDDIDataset, loader.dataset).metadata
             ],
             # Drug-level pair minimum Tanimoto from existing applicability domain
             'pair_min_tanimoto': applicability_scores['pair_minimum_nearest_train_tanimoto'],
@@ -2590,11 +2643,11 @@ def main() -> None:
     # 1. Pair-level applicability domain ──────────────────────────────────────
     training_pairs_source = [
         metadata['source']
-        for metadata in cast(PxDDIDataset, train_loader.dataset).metadata
+        for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
     ]
     training_pairs_target = [
         metadata['target']
-        for metadata in cast(PxDDIDataset, train_loader.dataset).metadata
+        for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
     ]
     pair_ood = PairApplicabilityDomain(
         minimum_similarity=APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY

@@ -1,7 +1,7 @@
 """Transparent binary-DDI evaluation utilities.
 
 The helpers in this module intentionally distinguish ranking, thresholded
-decision, calibration, and selective-prediction questions.  PxDDI's negative
+decision, calibration, and selective-prediction questions.  AuditDDI's negative
 examples are *unreported* pairs sampled from TWOSIDES; therefore these
 quantities describe the experimental label task, not clinical safety or
 clinical benefit.
@@ -10,7 +10,7 @@ clinical benefit.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -138,7 +138,7 @@ def calculate_binary_metrics(
 
     Accuracy is included only for comparison with prior papers.  AUROC,
     average precision, MCC, calibration, and confidence intervals are the
-    primary evidence because PxDDI uses sampled unreported negatives.
+    primary evidence because AuditDDI uses sampled unreported negatives.
     """
     if not 0 <= float(threshold) <= 1:
         raise ValueError('Threshold must lie between 0 and 1.')
@@ -152,7 +152,7 @@ def calculate_binary_metrics(
     positive_denominator = true_positive + false_negative
     prediction_negative_denominator = true_negative + false_negative
     result: dict[str, Any] = {
-        'sample_count': int(len(targets)),
+        'sample_count': len(targets),
         'positive_count': int((targets == 1).sum()),
         'negative_count': int((targets == 0).sum()),
         'positive_prevalence': float(targets.mean()) if has_rows else None,
@@ -240,7 +240,7 @@ def bootstrap_confidence_intervals(
         return {
             'status': 'skipped_one_class_or_empty_split',
             'method': 'stratified_nonparametric_bootstrap',
-            'resamples': int(resamples),
+            'resamples': resamples,
             'metrics': {name: None for name in names},
         }
     generator = np.random.default_rng(seed)
@@ -266,8 +266,8 @@ def bootstrap_confidence_intervals(
         'status': 'evaluated',
         'method': 'stratified_nonparametric_bootstrap',
         'confidence_level': 0.95,
-        'resamples': int(resamples),
-        'seed': int(seed),
+        'resamples': resamples,
+        'seed': seed,
         'stratification': 'experimental_binary_label',
         'interpretation_warning': (
             'These are within-split sample confidence intervals. They do not replace '
@@ -276,7 +276,7 @@ def bootstrap_confidence_intervals(
         'metrics': {
             name: {
                 'point_estimate': point_estimate[name],
-                'valid_resamples': int(len(values[name])),
+                'valid_resamples': len(values[name]),
                 'ci_95_lower': float(np.percentile(values[name], 2.5)) if values[name] else None,
                 'ci_95_upper': float(np.percentile(values[name], 97.5)) if values[name] else None,
             }
@@ -299,7 +299,7 @@ def selective_prediction_summary(
     retained = ~abstained
     summary: dict[str, Any] = {
         'rule': 'pre_fitted_conformal_prediction_set_is_singleton',
-        'total_sample_count': int(len(targets)),
+        'total_sample_count': len(targets),
         'retained_sample_count': int(retained.sum()),
         'abstained_sample_count': int(abstained.sum()),
         'retained_coverage': float(retained.mean()) if len(targets) else None,
@@ -362,7 +362,7 @@ def uncertainty_risk_coverage_curve(
         points.append({
             'requested_coverage': requested_coverage,
             'effective_coverage': float(retained_count / len(targets)) if len(targets) else None,
-            'retained_sample_count': int(retained_count),
+            'retained_sample_count': retained_count,
             'uncertainty_maximum': float(uncertainty_values[retained_indices].max())
             if retained_count else None,
             'experimental_label_error_rate': float(1 - accuracy) if accuracy is not None else None,
@@ -499,13 +499,17 @@ def save_confident_error_analysis(
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     safe_split_name = split_name.lower().replace(' ', '_')
-    false_positive = table[(table['label'] == 0) & (table['predicted_label'] == 1)].copy()
-    false_negative = table[(table['label'] == 1) & (table['predicted_label'] == 0)].copy()
+    false_positive: pd.DataFrame = cast(
+        pd.DataFrame, table[(table['label'] == 0) & (table['predicted_label'] == 1)].copy()
+    )
+    false_negative: pd.DataFrame = cast(
+        pd.DataFrame, table[(table['label'] == 1) & (table['predicted_label'] == 0)].copy()
+    )
     false_positive = false_positive.sort_values(
-        ['calibrated_prediction_score', 'confidence_margin_from_threshold'], ascending=False
+        by=['calibrated_prediction_score', 'confidence_margin_from_threshold'], ascending=False
     ).head(maximum_rows_per_error_type)
     false_negative = false_negative.sort_values(
-        ['calibrated_prediction_score', 'confidence_margin_from_threshold'], ascending=True
+        by=['calibrated_prediction_score', 'confidence_margin_from_threshold'], ascending=True
     ).head(maximum_rows_per_error_type)
     false_positive_path = destination / f'{safe_split_name}_false_positives.csv'
     false_negative_path = destination / f'{safe_split_name}_false_negatives.csv'
@@ -514,11 +518,11 @@ def save_confident_error_analysis(
     return {
         'method': 'confidence_ranked_threshold_errors',
         'threshold': float(threshold),
-        'maximum_rows_per_error_type': int(maximum_rows_per_error_type),
+        'maximum_rows_per_error_type': maximum_rows_per_error_type,
         'total_false_positives': int(((table['label'] == 0) & (table['predicted_label'] == 1)).sum()),
         'total_false_negatives': int(((table['label'] == 1) & (table['predicted_label'] == 0)).sum()),
-        'saved_false_positives': int(len(false_positive)),
-        'saved_false_negatives': int(len(false_negative)),
+        'saved_false_positives': len(false_positive),
+        'saved_false_negatives': len(false_negative),
         'false_positives_path': str(false_positive_path),
         'false_negatives_path': str(false_negative_path),
         'interpretation_warning': (

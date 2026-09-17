@@ -3,60 +3,200 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AuditDDI: Chemical Interaction Prediction</title>
+    <title>AuditDDI</title>
+    <meta http-equiv="refresh" content="0; url=/login.html">
     <!-- Import Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Link to our new premium stylesheet -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="index.css">
 </head>
 <body data-api-base-url="/api">
+    <p style="font-family:system-ui;padding:2rem">Opening <a href="/login.html">secure AuditDDI access</a>…</p>
+</body>
+</html>
+<!--
     <div class="background-blobs">
         <div class="blob blob-1"></div>
         <div class="blob blob-2"></div>
     </div>
 
     <header class="app-header">
+        <div class="header-badge">First-Principles Pharmacoinformatics & Clinical Safety</div>
         <h1>AuditDDI</h1>
-        <p class="subtitle">Auditable Graph-Fingerprint Framework for DDI Prediction</p>
+        <p class="subtitle" id="workspace-subtitle">Physics, chemistry and biology grounded interaction research.</p>
+
+        <section class="workspace-switcher" aria-label="Workspace selection">
+            <div>
+                <span class="workspace-kicker">Workspace</span>
+                <strong id="workspace-name">Research &amp; Discovery</strong>
+                <p id="workspace-audience">For clinical researchers and pharmacologists</p>
+            </div>
+            <label for="workspace-select">Choose workspace</label>
+            <select id="workspace-select" onchange="selectWorkspace(this.value)">
+                <option value="research">Research &amp; Discovery</option>
+                <option value="prescriber_review">Prescriber Review</option>
+                <option value="medication_safety">Medication Safety Review</option>
+                <option value="governance">Evidence &amp; Model Governance</option>
+                <option value="portfolio_screening">Portfolio Screening</option>
+                <option value="public_information">Medication Information</option>
+            </select>
+        </section>
+        <div id="workspace-boundary" class="workspace-boundary" role="status"></div>
+
+        <section class="auth-panel hidden" id="auth-panel" aria-label="Secure workspace access">
+            <form id="login-form" class="login-form" onsubmit="event.preventDefault(); loginToWorkspace();">
+                <label for="login-email">Email</label>
+                <input id="login-email" type="email" autocomplete="email" required>
+                <label for="login-password">Password</label>
+                <input id="login-password" type="password" autocomplete="current-password" required>
+                <button type="submit" class="secondary-btn">Sign in</button>
+                <p id="login-error" class="login-error hidden" role="alert"></p>
+            </form>
+            <div id="signed-in-view" class="signed-in-view hidden">
+                <span id="signed-in-user"></span>
+                <button type="button" class="secondary-btn" onclick="logoutFromWorkspace()">Sign out</button>
+            </div>
+        </section>
+        
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs" role="tablist">
+            <button type="button" class="tab-btn active" id="tab-btn-audit" onclick="switchMode('audit')">
+                <span class="tab-icon">🔬</span> Pair Evidence Review
+            </button>
+            <button type="button" class="tab-btn" id="tab-btn-poly" onclick="switchMode('poly')">
+                <span class="tab-icon">💊</span> Regimen Evidence Review
+            </button>
+            <button type="button" class="tab-btn" id="tab-btn-predict" onclick="switchMode('predict')">
+                <span class="tab-icon">🧠</span> Model Signal Review
+            </button>
+        </nav>
+
+        <!-- Quick Clinical Preset Bar -->
+        <div class="preset-bar">
+            <span class="preset-label">Test Scenarios:</span>
+            <button type="button" class="preset-btn safe-preset" onclick="loadScenario('safe')">
+                ✅ Safe Pair (Amoxicillin + APAP)
+            </button>
+            <button type="button" class="preset-btn danger-preset" onclick="loadScenario('nti')">
+                ⚠️ Fatal NTI (Warfarin + Fluconazole)
+            </button>
+            <button type="button" class="preset-btn warning-preset" onclick="loadScenario('poly')">
+                🔥 3-Drug CYP3A4 Traffic Jam
+            </button>
+            <button type="button" class="preset-btn ood-preset" onclick="loadScenario('ood')">
+                🛡️ OOD Guardrail (Lithium Salt)
+            </button>
+        </div>
     </header>
 
     <main class="app-container">
-        <!-- Left Column: Input Form -->
-        <section class="glass-card input-section">
-            <div class="card-header">
-                <h2>Predict Interaction</h2>
-                <p>Enter the SMILES strings for the drug pair.</p>
+        <section class="public-information-panel glass-card hidden" id="public-information-panel" aria-live="polite">
+            <span class="dossier-tag">MEDICATION INFORMATION</span>
+            <h2>Ask a pharmacist or prescriber for a personal medication check.</h2>
+            <p>AuditDDI does not collect health details, calculate doses, or decide whether you personally should start, stop, or combine medicines.</p>
+            <div class="public-steps">
+                <div><strong>1. Prepare</strong><span>Bring medicine names, strengths, supplements, and allergies.</span></div>
+                <div><strong>2. Ask</strong><span>Ask a pharmacist or prescriber to check the complete list.</span></div>
+                <div><strong>3. Act safely</strong><span>For urgent symptoms or suspected overdose, contact local emergency services.</span></div>
             </div>
+        </section>
+        <!-- Left Column: Dynamic Input Form -->
+        <section class="glass-card input-section">
             
-            <form id="prediction-form" onsubmit="event.preventDefault(); checkRisk();">
-                <div class="input-group">
-                    <label for="smilesA">Drug A SMILES</label>
-                    <input type="text" id="smilesA" placeholder="e.g. CC(=O)OC1=CC=CC=C1C(=O)O" required autocomplete="off">
+            <!-- MODE 1: CLINICAL PAIR AUDIT -->
+            <div id="form-mode-audit" class="form-mode-panel">
+                <div class="card-header">
+                    <h2>Clinical Pair Audit</h2>
+                    <p>Evaluates orthogonal clearance, single-drug ADMET, and NTI collision risks.</p>
                 </div>
+                <form id="audit-form" onsubmit="event.preventDefault(); runClinicalAudit();">
+                    <div class="drug-input-block">
+                        <div class="input-group">
+                            <label for="auditDrugAName">Drug A Name</label>
+                            <input type="text" id="auditDrugAName" placeholder="e.g. Amoxicillin" value="Amoxicillin" required autocomplete="off">
+                        </div>
+                        <div class="input-group">
+                            <label for="auditSmilesA">Drug A SMILES</label>
+                            <input type="text" id="auditSmilesA" placeholder="SMILES string" value="CC1(C(N2C(S1)C(C2=O)NC(=O)C(C3=CC=C(C=C3)O)N)C(=O)O)C" required autocomplete="off">
+                        </div>
+                    </div>
 
-                <div class="input-group">
-                    <label for="smilesB">Drug B SMILES</label>
-                    <input type="text" id="smilesB" placeholder="e.g. CN1C=NC2=C1C(=O)N(C(=O)N2C)C" required autocomplete="off">
+                    <div class="drug-input-block">
+                        <div class="input-group">
+                            <label for="auditDrugBName">Drug B Name</label>
+                            <input type="text" id="auditDrugBName" placeholder="e.g. Acetaminophen" value="Acetaminophen" required autocomplete="off">
+                        </div>
+                        <div class="input-group">
+                            <label for="auditSmilesB">Drug B SMILES</label>
+                            <input type="text" id="auditSmilesB" placeholder="SMILES string" value="CC(=O)NC1=CC=C(C=C1)O" required autocomplete="off">
+                        </div>
+                    </div>
+
+                    <button type="submit" id="audit-submit-btn" class="primary-btn">
+                        <span class="btn-text">Generate Clinical Audit Dossier</span>
+                        <span class="loader hidden"></span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- MODE 2: MULTI-DRUG POLYPHARMACY REGIMEN -->
+            <div id="form-mode-poly" class="form-mode-panel hidden">
+                <div class="card-header">
+                    <h2>Polypharmacy Regimen Analyzer</h2>
+                    <p>Analyzes cumulative CYP metabolic saturation and additive organ burdens across 2+ drugs.</p>
                 </div>
+                <form id="poly-form" onsubmit="event.preventDefault(); runPolypharmacyAnalysis();">
+                    <div id="poly-drug-list" class="poly-drug-list">
+                        <!-- Dynamic Drug Rows will be inserted here -->
+                    </div>
 
-                <button type="submit" id="predict-btn" class="primary-btn">
-                    <span class="btn-text">Analyze Pair</span>
-                    <span class="loader hidden"></span>
-                </button>
-            </form>
+                    <div class="poly-actions">
+                        <button type="button" class="secondary-btn add-drug-btn" onclick="addPolyDrugRow()">
+                            + Add Another Drug to Regimen
+                        </button>
+                    </div>
+
+                    <button type="submit" id="poly-submit-btn" class="primary-btn">
+                        <span class="btn-text">Analyze Polypharmacy Regimen</span>
+                        <span class="loader hidden"></span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- MODE 3: NEURAL PREDICTOR -->
+            <div id="form-mode-predict" class="form-mode-panel hidden">
+                <div class="card-header">
+                    <h2>Neural Network Predictor</h2>
+                    <p>GNN edge-aware interaction probability with conformal uncertainty bounds.</p>
+                </div>
+                <form id="prediction-form" onsubmit="event.preventDefault(); checkRisk();">
+                    <div class="input-group">
+                        <label for="smilesA">Drug A SMILES</label>
+                        <input type="text" id="smilesA" placeholder="e.g. CC(=O)OC1=CC=CC=C1C(=O)O" value="CC(=O)OC1=CC=CC=C1C(=O)O" required autocomplete="off">
+                    </div>
+                    <div class="input-group">
+                        <label for="smilesB">Drug B SMILES</label>
+                        <input type="text" id="smilesB" placeholder="e.g. CN1C=NC2=C1C(=O)N(C(=O)N2C)C" value="CN1C=NC2=C1C(=O)N(C(=O)N2C)C" required autocomplete="off">
+                    </div>
+                    <button type="submit" id="predict-btn" class="primary-btn">
+                        <span class="btn-text">Run Neural GNN Inference</span>
+                        <span class="loader hidden"></span>
+                    </button>
+                </form>
+            </div>
+
             <div class="disclaimer">
-                🛡️ <strong>Research Prototype:</strong> Audited & calibrated multimodal DDI predictor. Preclinical evaluation only; not FDA approved for direct clinical decision-making.
+                🛡️ <strong>Research boundary:</strong> AuditDDI evaluates molecular structures and model evidence. It does not replace a pharmacist, prescriber, patient record, dose review, or validated laboratory result. When it lacks a basis to evaluate a structure, it explicitly abstains.
             </div>
         </section>
 
-        <!-- Right Column: Results -->
+        <!-- Right Column: Results Presentation -->
         <section class="glass-card results-section" id="results-container">
+            <!-- Empty State -->
             <div class="empty-state" id="empty-state">
                 <div class="icon-molecule">
-                    <!-- SVG Molecule Icon -->
-                    <svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                    <svg viewBox="0 0 24 24" width="56" height="56" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="9" cy="9" r="2"></circle>
                         <circle cx="15" cy="15" r="2"></circle>
                         <circle cx="9" cy="15" r="2"></circle>
@@ -68,11 +208,123 @@
                     </svg>
                 </div>
                 <h3>Awaiting Input</h3>
-                <p>Run a prediction to see the interaction analysis.</p>
+                <p>Select a quick scenario above or enter SMILES to generate a clinical audit dossier.</p>
             </div>
 
-            <div class="results-content hidden" id="results-content">
-                <h2>Analysis Complete</h2>
+            <!-- RESULTS CONTAINER 1: CLINICAL AUDIT DOSSIER -->
+            <div class="results-content hidden" id="results-audit">
+                <div class="dossier-header">
+                    <span class="dossier-tag">CLINICAL SAFETY DOSSIER</span>
+                    <div class="status-badge" id="audit-status-badge">[STATUS]</div>
+                </div>
+
+                <div class="callout-card" id="audit-callout">
+                    <h4 id="audit-callout-title">Mechanistic Grounding & Proof</h4>
+                    <p id="audit-callout-rationale">Rationale details...</p>
+                    <div class="recommendation-box" id="audit-callout-rec">
+                        <strong>Clinical Action:</strong> <span id="audit-callout-rec-text">--</span>
+                    </div>
+                </div>
+
+                <!-- Single-Drug ADMET Comparison Table -->
+                <div class="section-subtitle">Single-Drug ADMET & Intrinsic Danger Profile</div>
+                <div class="table-responsive">
+                    <table class="admet-table" id="audit-admet-table">
+                        <thead>
+                            <tr>
+                                <th>Pharmacokinetic Parameter</th>
+                                <th id="th-drug-a">Drug A</th>
+                                <th id="th-drug-b">Drug B</th>
+                                <th>Clinical Relevance</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-admet-body">
+                            <!-- Populated dynamically via app.js -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Metabolic Clearance Collision Box -->
+                <div class="section-subtitle" style="margin-top: 1.5rem;">Competitive Metabolic Collision</div>
+                <div class="metric-card collision-card">
+                    <div class="collision-metrics-grid">
+                        <div>
+                            <div class="metric-label">Collision Index</div>
+                            <div class="metric-value small" id="audit-collision-index">0.000</div>
+                        </div>
+                        <div>
+                            <div class="metric-label">Dominant Colliding CYP</div>
+                            <div class="metric-value small" id="audit-dominant-cyp">--</div>
+                        </div>
+                        <div>
+                            <div class="metric-label">CYP Substrate Overlap</div>
+                            <div class="metric-value small" id="audit-cyp-overlap">0.00</div>
+                        </div>
+                    </div>
+                    <div class="risk-bar-container">
+                        <div class="risk-bar" id="audit-collision-bar"></div>
+                    </div>
+                </div>
+
+                <!-- Recommended Wet-Lab Assay Box -->
+                <div class="wet-lab-card">
+                    <div class="wet-lab-title">🔬 Recommended Wet-Lab Validation Protocol</div>
+                    <p><strong>Assay:</strong> <span id="audit-wetlab-assay">--</span></p>
+                    <p><strong>Analytical Instrumentation:</strong> <span id="audit-wetlab-equip">--</span></p>
+                </div>
+                <button type="button" class="secondary-btn export-btn" data-export="audit" onclick="downloadCurrentReport('audit')">Download structured report</button>
+            </div>
+
+            <!-- RESULTS CONTAINER 2: POLYPHARMACY DOSSIER -->
+            <div class="results-content hidden" id="results-poly">
+                <div class="dossier-header">
+                    <span class="dossier-tag">POLYPHARMACY REGIMEN AUDIT</span>
+                    <div class="status-badge" id="poly-status-badge">[REGIMEN STATUS]</div>
+                </div>
+
+                <div class="callout-card" id="poly-guidance-card">
+                    <h4>Cumulative Regimen Assessment</h4>
+                    <p id="poly-guidance-text">--</p>
+                </div>
+
+                <!-- Cumulative CYP Enzyme Saturation Gauges -->
+                <div class="section-subtitle">Cumulative CYP Clearance Saturation Loads</div>
+                <div class="cyp-gauges-grid" id="poly-cyp-grid">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <!-- Cumulative Organ Liabilities -->
+                <div class="section-subtitle" style="margin-top: 1.5rem;">Cumulative Organ Liabilities</div>
+                <div class="organ-liabilities-grid">
+                    <div class="organ-card">
+                        <span class="organ-icon">🫀</span>
+                        <div>
+                            <div class="metric-label">hERG Cardiotoxicity</div>
+                            <div class="metric-value small" id="poly-herg-score">0</div>
+                            <div class="metric-desc">QT Prolongation alerts</div>
+                        </div>
+                    </div>
+                    <div class="organ-card">
+                        <span class="organ-icon">🫁</span>
+                        <div>
+                            <div class="metric-label">Reactive Hepatotoxicity</div>
+                            <div class="metric-value small" id="poly-hepato-score">0</div>
+                            <div class="metric-desc">Covalent metabolite alerts</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Regimen Pairwise Collision Matrix -->
+                <div class="section-subtitle" style="margin-top: 1.5rem;">Pairwise Regimen Collisions</div>
+                <div id="poly-pairs-container" class="poly-pairs-container">
+                    <!-- Populated dynamically -->
+                </div>
+                <button type="button" class="secondary-btn export-btn" data-export="poly" onclick="downloadCurrentReport('poly')">Download structured report</button>
+            </div>
+
+            <!-- RESULTS CONTAINER 3: NEURAL GNN PREDICTOR -->
+            <div class="results-content hidden" id="results-predict">
+                <h2>Neural Interaction Analysis</h2>
                 
                 <div class="metric-card risk-card" id="risk-card">
                     <h3 class="metric-label">Model Interaction Score</h3>
@@ -85,11 +337,11 @@
 
                 <div class="toxicity-grid">
                     <div class="metric-card tox-card">
-                        <h3 class="metric-label">Drug A Auxiliary Toxicity Score</h3>
+                        <h3 class="metric-label">Drug A Auxiliary Toxicity</h3>
                         <div class="metric-value small" id="toxA-value">--%</div>
                     </div>
                     <div class="metric-card tox-card">
-                        <h3 class="metric-label">Drug B Auxiliary Toxicity Score</h3>
+                        <h3 class="metric-label">Drug B Auxiliary Toxicity</h3>
                         <div class="metric-value small" id="toxB-value">--%</div>
                     </div>
                 </div>
@@ -103,17 +355,18 @@
                     <p><strong>Structural Domain:</strong> <span id="meta-ood">--</span></p>
                     <p><strong>Request ID:</strong> <span id="meta-reqid" class="code-font">--</span></p>
                 </div>
+                <button type="button" class="secondary-btn export-btn" data-export="predict" onclick="downloadCurrentReport('predict')">Download structured report</button>
             </div>
-            
+
             <!-- Error State -->
             <div class="error-state hidden" id="error-state">
-                <svg viewBox="0 0 24 24" width="48" height="48" stroke="#ff4d4d" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <svg viewBox="0 0 24 24" width="48" height="48" stroke="#ef4444" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="10"></circle>
                     <line x1="12" y1="8" x2="12" y2="12"></line>
                     <line x1="12" y1="16" x2="12.01" y2="16"></line>
                 </svg>
-                <h3>Analysis Failed</h3>
-                <p id="error-message">An error occurred during prediction.</p>
+                <h3 id="error-title">Analysis Failed</h3>
+                <p id="error-message">An error occurred during evaluation.</p>
                 <button class="secondary-btn" onclick="resetForm()">Try Again</button>
             </div>
         </section>

@@ -115,8 +115,9 @@ def load_chembl_chemreps(path: str | Path, *, nrows: int | None = None) -> pd.Da
 
 def audit_chembl_structure_overlap(
     chemreps_path: str | Path,
-    pxddi_smiles: Iterable[object],
+    auditddi_smiles: Iterable[object] | None = None,
     *,
+    pxddi_smiles: Iterable[object] | None = None,
     chunksize: int = 100_000,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """Audit exact canonical-SMILES overlap without retaining all ChEMBL rows.
@@ -124,9 +125,10 @@ def audit_chembl_structure_overlap(
     The returned overlap is evidence of structural corpus coverage. It is not
     evidence of drug-target activity and must not be interpreted as a DDI label.
     """
-    pxddi_canonical = {
+    raw_input_smiles = auditddi_smiles if auditddi_smiles is not None else (pxddi_smiles or [])
+    auditddi_canonical = {
         canonical
-        for raw_smiles in pxddi_smiles
+        for raw_smiles in raw_input_smiles
         if (canonical := _canonicalize_smiles(raw_smiles)) is not None
     }
     matched_records: list[dict[str, str]] = []
@@ -136,7 +138,7 @@ def audit_chembl_structure_overlap(
         canonical_smiles = chunk['canonical_smiles'].map(_canonicalize_smiles)
         valid_mask = canonical_smiles.notna()
         valid_structures += int(valid_mask.sum())
-        matches = chunk.loc[valid_mask & canonical_smiles.isin(pxddi_canonical)].copy()
+        matches = chunk.loc[valid_mask & canonical_smiles.isin(auditddi_canonical)].copy()
         if not matches.empty:
             matches['canonical_smiles'] = canonical_smiles.loc[matches.index].values
             matched_rows += len(matches)
@@ -150,14 +152,17 @@ def audit_chembl_structure_overlap(
     ).drop_duplicates(['chembl_id', 'canonical_smiles']).sort_values(
         ['canonical_smiles', 'chembl_id'], ignore_index=True
     )
+    n_unique_matched = int(overlap['canonical_smiles'].nunique()) if not overlap.empty else 0
     summary: dict[str, Any] = {
         'source_file': str(Path(chemreps_path)),
         'source_sha256': sha256_file(chemreps_path),
         'source_rows': source_rows,
         'valid_canonical_smiles_rows': valid_structures,
-        'pxddi_unique_valid_structures': len(pxddi_canonical),
+        'auditddi_unique_valid_structures': len(auditddi_canonical),
+        'pxddi_unique_valid_structures': len(auditddi_canonical),
         'matched_chembl_rows': matched_rows,
-        'matched_unique_pxddi_structures': int(overlap['canonical_smiles'].nunique()),
+        'matched_unique_auditddi_structures': n_unique_matched,
+        'matched_unique_pxddi_structures': n_unique_matched,
         'purpose': 'structure_corpus_coverage_and_future_pretraining_only',
         'not_evidence_of': ['molecule_target_activity', 'DDI_label', 'external_DDI_validation'],
     }
@@ -191,7 +196,7 @@ def load_chembl_uniprot_target_metadata(path: str | Path) -> tuple[pd.DataFrame,
     summary: dict[str, Any] = {
         'source_file': str(source),
         'source_sha256': sha256_file(source),
-        'rows': int(len(frame)),
+        'rows': len(frame),
         'unique_uniprot_accessions': int(frame['uniprot_accession'].nunique()),
         'unique_chembl_target_ids': int(frame['chembl_target_id'].nunique()),
         'purpose': 'target_metadata_only',

@@ -1,4 +1,4 @@
-"""Small, explicit SMARTS motif vocabulary for an experimental PxDDI view.
+"""Small, explicit SMARTS motif vocabulary for an experimental AuditDDI view.
 
 These descriptors are chemical-prior features, not curated causal DDI
 mechanisms.  They are kept separate from atom/bond graphs so the motif-fusion

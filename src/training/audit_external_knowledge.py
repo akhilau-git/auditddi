@@ -37,63 +37,44 @@ from data_prep.pharmgkb_pipeline import (
 )
 
 
-RESULTS_BASE = Path(os.environ.get('PXDDI_RESULTS_BASE', '/content/drive/MyDrive/pxddi-results'))
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base,
+    resolve_dataset_subpath,
+    get_auditddi_env,
+)
 
-
-def resolve_data_base(configured_path: str | Path) -> Path:
-    """Resolve a Drive data root, including a commonly pasted shortcut path.
-
-    Google Drive shortcuts live at ``/content/drive/.shortcut-targets-by-id``.
-    A frequent Colab mistake is to append that absolute shortcut below
-    ``/content/drive/MyDrive/pxddi-data``.  When the direct location exists,
-    repair only that unambiguous malformed form and report it to the user.
-    """
-    data_base = Path(configured_path)
-    if data_base.is_dir():
-        return data_base
-    parts = data_base.parts
-    marker = '.shortcut-targets-by-id'
-    if marker in parts:
-        shortcut_start = parts.index(marker)
-        corrected = Path('/content/drive').joinpath(*parts[shortcut_start:])
-        if corrected.is_dir():
-            print(
-                'Corrected PXDDI_DATA_BASE from a nested Drive-shortcut path to: '
-                f'{corrected}'
-            )
-            return corrected
-    raise FileNotFoundError(
-        f'PXDDI_DATA_BASE is not a readable directory: {data_base}. '
-        'Set it to either the real /content/drive/MyDrive/... folder or the '
-        'absolute /content/drive/.shortcut-targets-by-id/... shortcut path.'
-    )
+RESULTS_BASE = resolve_results_base()
 
 
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding='utf-8')
 
 
-def _load_pxddi_smiles(edges_path: Path) -> list[object]:
+def _load_auditddi_smiles(edges_path: Path) -> list[object]:
     if not edges_path.is_file():
         raise FileNotFoundError(f'TWOSIDES pair table was not found: {edges_path}')
     edges = pd.read_csv(edges_path, usecols=['source', 'target'], dtype=str, keep_default_na=False)
     return edges[['source', 'target']].to_numpy().ravel().tolist()
 
 
+_load_pxddi_smiles = _load_auditddi_smiles
+
+
 def resolve_pharmgkb_chemical_catalog_path(pharmgkb_dir: Path) -> Path | None:
     """Find an explicitly named PharmGKB chemical catalogue, if supplied.
 
-    The caller may set ``PXDDI_PHARMGKB_CHEMICAL_CATALOG`` for a non-standard
+    The caller may set ``AUDITDDI_PHARMGKB_CHEMICAL_CATALOG`` for a non-standard
     filename. We do not guess from arbitrary Pharmacogenomics tables, because
     a direct chemical name plus SMILES field is required for the exact identity
     mapping used below.
     """
-    configured = os.environ.get('PXDDI_PHARMGKB_CHEMICAL_CATALOG')
+    configured = get_auditddi_env('PHARMGKB_CHEMICAL_CATALOG')
     if configured:
         source = Path(configured)
         if not source.is_file():
             raise FileNotFoundError(
-                'PXDDI_PHARMGKB_CHEMICAL_CATALOG was set but is not a file: '
+                'AUDITDDI_PHARMGKB_CHEMICAL_CATALOG was set but is not a file: '
                 f'{source}'
             )
         return source
@@ -107,17 +88,15 @@ def resolve_pharmgkb_chemical_catalog_path(pharmgkb_dir: Path) -> Path | None:
 
 
 def main() -> None:
-    data_base = resolve_data_base(
-        os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data')
-    )
-    chembl_dir = data_base / 'chembl'
-    pharmgkb_dir = data_base / 'pharmgkb'
-    twosides_dir = data_base / 'twosides'
-    chemreps_path = chembl_dir / 'chembl_37_chemreps.txt.gz'
-    target_metadata_path = chembl_dir / 'chembl_uniprot_mapping.txt'
-    relationships_path = pharmgkb_dir / 'relationships.tsv'
-    edges_path = twosides_dir / 'drug_drug_edges.csv'
-    catalog_path = twosides_dir / 'twosides_drugs.csv'
+    data_base = resolve_data_base()
+    chembl_dir = resolve_dataset_subpath(data_base, 'chembl')
+    pharmgkb_dir = resolve_dataset_subpath(data_base, 'pharmgkb')
+    twosides_dir = resolve_dataset_subpath(data_base, 'twosides')
+    chemreps_path = resolve_dataset_subpath(chembl_dir, 'chembl_37_chemreps.txt.gz')
+    target_metadata_path = resolve_dataset_subpath(chembl_dir, 'chembl_uniprot_mapping.txt')
+    relationships_path = resolve_dataset_subpath(pharmgkb_dir, 'relationships.tsv')
+    edges_path = resolve_dataset_subpath(twosides_dir, 'drug_drug_edges.csv')
+    catalog_path = resolve_dataset_subpath(twosides_dir, 'twosides_drugs.csv')
 
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     output_dir = RESULTS_BASE / 'external_knowledge_audits' / f'audit_{run_id}'

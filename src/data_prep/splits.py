@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 def canonical_pair(drug_a: Hashable, drug_b: Hashable) -> tuple[str, str]:
     """Return a stable, order-independent identifier for a drug pair.
 
-    PxDDI is order-independent, so ``A-B`` and ``B-A`` must never be treated
+    AuditDDI is order-independent, so ``A-B`` and ``B-A`` must never be treated
     as distinct observations during negative sampling or data splitting.
     """
     if pd.isna(cast(Any, drug_a)) or pd.isna(cast(Any, drug_b)):

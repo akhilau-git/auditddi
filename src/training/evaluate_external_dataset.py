@@ -69,8 +69,8 @@ def validate_external_metadata(metadata: dict) -> None:
 def _collate(records):
     graphs_a, graphs_b, labels, sources, targets = zip(*records)
     return (
-        Batch.from_data_list(graphs_a),
-        Batch.from_data_list(graphs_b),
+        Batch.from_data_list(list(graphs_a)),
+        Batch.from_data_list(list(graphs_b)),
         torch.tensor(labels, dtype=torch.float),
         list(sources),
         list(targets),
@@ -83,7 +83,7 @@ def canonical_unordered_pair(source: object, target: object) -> tuple[str, str] 
     canonical_target = canonicalize(str(target))
     if canonical_source is None or canonical_target is None:
         return None
-    return tuple(sorted((canonical_source, canonical_target)))
+    return (min(canonical_source, canonical_target), max(canonical_source, canonical_target))
 
 
 def load_verified_development_pair_keys(checkpoint: dict) -> tuple[set[tuple[str, str]], dict]:
@@ -284,22 +284,30 @@ def memory_features_for_pairs(
 
 
 def main() -> None:
-    data_path = Path(os.environ['PXDDI_EXTERNAL_EDGES'])
-    metadata_path = Path(os.environ['PXDDI_EXTERNAL_METADATA'])
-    raw_checkpoint_path = os.environ.get('PXDDI_EXTERNAL_CHECKPOINT_PATH')
+    from src.data_prep.path_resolver import resolve_results_base, get_auditddi_env
+
+    raw_edges = get_auditddi_env('EXTERNAL_EDGES')
+    if not raw_edges:
+        raise ValueError('Set AUDITDDI_EXTERNAL_EDGES to the external edges CSV file.')
+    data_path = Path(raw_edges)
+
+    raw_meta = get_auditddi_env('EXTERNAL_METADATA')
+    if not raw_meta:
+        raise ValueError('Set AUDITDDI_EXTERNAL_METADATA to the external metadata JSON file.')
+    metadata_path = Path(raw_meta)
+
+    raw_checkpoint_path = get_auditddi_env('EXTERNAL_CHECKPOINT_PATH')
     if not raw_checkpoint_path:
         raise ValueError(
-            'Set PXDDI_EXTERNAL_CHECKPOINT_PATH to the one reviewed checkpoint '
+            'Set AUDITDDI_EXTERNAL_CHECKPOINT_PATH to the one reviewed checkpoint '
             'you intend to evaluate.'
         )
     checkpoint_path = Path(raw_checkpoint_path)
-    output_dir = Path(os.environ.get(
-        'PXDDI_EXTERNAL_ARTIFACTS_DIR',
-        '/content/drive/MyDrive/pxddi-data/external_evaluations',
-    )) / datetime.now(timezone.utc).strftime('external_%Y%m%dT%H%M%SZ')
-    bootstrap_resamples = int(os.environ.get('PXDDI_EXTERNAL_BOOTSTRAP_RESAMPLES', '1000'))
+    default_out = resolve_results_base() / 'external_evaluations'
+    output_dir = Path(get_auditddi_env('EXTERNAL_ARTIFACTS_DIR', default_out)) / datetime.now(timezone.utc).strftime('external_%Y%m%dT%H%M%SZ')
+    bootstrap_resamples = int(get_auditddi_env('EXTERNAL_BOOTSTRAP_RESAMPLES', '1000'))
     if bootstrap_resamples < 0:
-        raise ValueError('PXDDI_EXTERNAL_BOOTSTRAP_RESAMPLES must be zero or positive.')
+        raise ValueError('AUDITDDI_EXTERNAL_BOOTSTRAP_RESAMPLES must be zero or positive.')
     metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
     validate_external_metadata(metadata)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -366,7 +374,7 @@ def main() -> None:
         resamples=bootstrap_resamples,
         seed=0,
     )
-    metrics['excluded_graph_incompatible_rows'] = int(len(excluded))
+    metrics['excluded_graph_incompatible_rows'] = len(excluded)
     excluded.to_csv(output_dir / 'graph_incompatible_exclusions.csv', index=False)
     pd.DataFrame({
         'row_id': np.arange(len(labels_array)),
@@ -387,7 +395,7 @@ def main() -> None:
         'development_overlap_screen': {
             'status': 'passed_no_exact_canonical_pair_overlap',
             **development_split_summary,
-            'external_rows_checked': int(len(external_dataframe)),
+            'external_rows_checked': len(external_dataframe),
             'overlapping_rows': 0,
         },
         'metrics': metrics,

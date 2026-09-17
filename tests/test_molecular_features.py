@@ -20,7 +20,7 @@ from src.models.ddi_model import (
     MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MOTIF_EDGE_AWARE,
-    PxDDIModel,
+    AuditDDIModel,
     model_from_checkpoint,
 )
 from src.models.encoder import CrossDrugAttention
@@ -41,7 +41,7 @@ def test_toxicity_head_returns_logits_but_risk_features_remain_probabilities():
     assert graph_a is not None and graph_b is not None
     batch_a = Batch.from_data_list([graph_a])
     batch_b = Batch.from_data_list([graph_b])
-    model = PxDDIModel(in_channels=NUM_ATOM_FEATURES, hidden_channels=8).eval()
+    model = AuditDDIModel(in_channels=NUM_ATOM_FEATURES, hidden_channels=8).eval()
 
     with torch.no_grad():
         embedding_a = model.encoder(batch_a.x, batch_a.edge_index, batch_a.batch)
@@ -98,7 +98,7 @@ def test_edge_aware_model_is_symmetric():
     graph_a = smiles_to_graph('C/C=C/C', feature_schema=FEATURE_SCHEMA_RICH)
     graph_b = smiles_to_graph('CC(=O)OC1=CC=CC=C1C(=O)O', feature_schema=FEATURE_SCHEMA_RICH)
     assert graph_a is not None and graph_b is not None
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_EDGE_AWARE,
@@ -122,7 +122,7 @@ def test_motif_edge_aware_model_is_symmetric():
         include_motif_features=True,
     )
     assert graph_a is not None and graph_b is not None
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_MOTIF_EDGE_AWARE,
@@ -165,7 +165,7 @@ def test_cross_attention_edge_aware_model_is_symmetric():
         'CC(=O)OC1=CC=CC=C1C(=O)O', feature_schema=FEATURE_SCHEMA_RICH
     )
     assert graph_a is not None and graph_b is not None
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
@@ -180,7 +180,7 @@ def test_cross_attention_edge_aware_model_is_symmetric():
 
 
 def test_cross_attention_checkpoint_recreates_and_loads_its_architecture():
-    source_model = PxDDIModel(
+    source_model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=8,
         architecture_version=MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,

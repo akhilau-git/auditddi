@@ -11,7 +11,7 @@ from src.data_prep.cached_graph_loader import (
 )
 from src.models.ddi_model import (
     MODEL_ARCHITECTURE_MULTIMODAL,
-    PxDDIModel,
+    AuditDDIModel,
 )
 
 
@@ -83,7 +83,7 @@ def test_multimodal_model_forward():
     batch = next(iter(loader))
 
     # Initialize Multimodal Model
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=batch["drug_a"].x.size(1),
         hidden_channels=32,
         edge_feature_dim=batch["drug_a"].edge_attr.size(1),

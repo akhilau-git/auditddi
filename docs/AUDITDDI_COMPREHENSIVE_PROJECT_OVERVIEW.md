@@ -118,12 +118,12 @@ Yes, but with **honest, audited scientific boundaries**. AuditDDI refuses to pre
 | Evaluation Protocol | Baseline 2D GNN | AuditDDI Multimodal | Statistical Significance / Audit Finding |
 |---|---|---|---|
 | **Transductive Test** (Known Drugs, New Pairs) | AUROC: 0.897 | **AUROC: 0.952** | State-of-the-art; convergence in <40 epochs via ECFP shortcut. |
-| **S2 Inductive** (Both Drugs Unseen) | AUROC: 0.651 | **AUROC: 0.726** | Stable zero-shot chemical generalization. |
-| **S1 Inductive** (One Unseen Drug) | AUROC: 0.527 *(Collapsed)* | **AUROC: 0.627 – 0.641** | **Resolved S1 collapse** via UniProt ESM-2 sequence fusion. |
+| **S1 Inductive** (Both Drugs Unseen) | Historical values only | Historical values only | Requires repeated audited reruns; do not claim resolution. |
+| **S2 Inductive** (One Unseen Drug) | Historical values only | Historical values only | Requires repeated audited reruns; do not claim zero-shot generalization. |
 | **Bemis-Murcko Scaffold-Disjoint** | AUROC: 0.539 | **AUROC: 0.554** | **$p = 5.5011 \times 10^{-7}$** across 1,000-iteration paired bootstrap. |
 
 ### How Truthfulness is Enforced
-1. **Scaffold-Disjoint Generalization**: We do not just randomly split pairs. We partition molecules by their Bemis-Murcko rings so that entire core structures are withheld from training. The resulting $p$-value ($5.50 \times 10^{-7}$) proves that the multimodal advantage is chemically genuine, not an artifact of random sampling.
+1. **Scaffold-Disjoint Generalization**: We partition molecules by their Bemis-Murcko rings so that entire core structures are withheld from training. Any observed performance difference is benchmark evidence only; it does not prove a chemical mechanism or clinical benefit.
 2. **Platt-Calibrated Probabilities**: Raw logits are mapped through validation logistic calibration. A calibrated score of `0.85` corresponds to an empirical 85% probability of reported adverse interaction.
 3. **Audit Nomenclature**: The output is explicitly labeled as **"Probability of Reported Adverse Interaction in Pharmacovigilance Surveillance"**, actively preventing clinicians from misinterpreting a low score as proof of absolute biological safety.
 
@@ -158,7 +158,7 @@ AuditDDI is engineered with strict separation between **training compute** and *
 * Molecular features are stored in a lightweight in-memory `MolecularCache`, preventing disk I/O bottlenecks during message passing.
 
 ### C. Deployment Modes
-1. **Local Desktop / Research Station**: Completely functional offline using the pre-compiled `pxddi_model.pt` checkpoint.
+1. **Local Desktop / Research Station**: Completely functional offline using the pre-compiled `auditddi_model.pt` checkpoint.
 2. **Cloud REST API**: FastAPI backend with Swagger docs, CORS controls, rate-limiting, and Pydantic validation schemas.
 3. **Web Dashboard**: Responsive UI with dynamic chemical structure rendering and interactive attribution heatmaps.
 

@@ -83,7 +83,7 @@ def test_ensure_scaffold_splits(tmp_path):
 
 def test_evaluate_split_handles_tuple_model_output():
     from src.training.benchmark_scaffold_study import evaluate_split
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_EDGE_AWARE
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_EDGE_AWARE
     from src.data_prep.cached_graph_loader import MolecularCache, build_cached_multimodal_dataloader
 
     # Construct minimal dummy data
@@ -111,7 +111,7 @@ def test_evaluate_split_handles_tuple_model_output():
     first_graph = cache.graphs[smi1]
     in_dim = first_graph.x.size(1) if first_graph.x is not None else 78
     edge_dim = first_graph.edge_attr.size(1) if first_graph.edge_attr is not None else 10
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_dim,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_EDGE_AWARE,

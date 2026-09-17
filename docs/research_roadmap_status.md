@@ -1,4 +1,4 @@
-# PxDDI research roadmap status
+# AuditDDI research roadmap status
 
 This status separates implemented source code from evidence that still requires
 a Colab run or an independently sourced dataset. A feature is not a result
@@ -10,7 +10,7 @@ until its audited artifacts have been generated and reviewed.
 | 2. Fair baselines | Partial | Symmetric ECFP/Morgan + SGD logistic baseline, a fixed-split experiment launcher that separates model seeds from split seed, and repeated-seed comparison support. | XGBoost, GCN/GIN, directed MPNN, and actual matched baseline runs. |
 | 3A. Motif view | Source complete | Auditable 17-SMARTS motif features and motif-edge-aware ablations. | Repeated matched-seed S1/S2 evidence. |
 | 3B. Cross-drug layer | Source complete | Pair-isolated symmetric atom-level cross attention and atom/motif association audit. | Repeated matched-seed S1/S2 and efficiency evidence. |
-| 3C. Contrastive pretraining | Source complete; execution pending | Schema-validated ChEMBL structure parser, deterministic corpus selection, strict exclusion of every non-training PxDDI structure, edge-aware masked-feature NT-Xent pretraining, encoder-only checkpoint provenance, and a separate fine-tuning candidate. | Run the pretraining candidate in Colab, then compare its S1/S2 results against the identical-split edge-aware model across matched seeds. |
+| 3C. Contrastive pretraining | Source complete; execution pending | Schema-validated ChEMBL structure parser, deterministic corpus selection, strict exclusion of every non-training AuditDDI structure, edge-aware masked-feature NT-Xent pretraining, encoder-only checkpoint provenance, and a separate fine-tuning candidate. | Run the pretraining candidate in Colab, then compare its S1/S2 results against the identical-split edge-aware model across matched seeds. |
 | 4. Ablations | Source partial | Legacy, edge-aware, motif, and cross-attention DDI-only/multitask variants in a controlled suite. | Contrastive/full-model ablations and executed repeated-seed studies. |
 | 5. Explainability | Source complete for local audit | Bounded atom/bond/motif occlusion, fidelity/sufficiency, canonical-SMILES stability, pair symmetry, attention/motif associations, SVG figures, conformal/OOD fields, and cross-seed stability analyzer. | Run the cross-seed audit and obtain a real curated mechanism reference for chemical-plausibility evaluation. |
 | 6. Ensemble and abstention | Source complete; unrun | Fixed-split 3–5 member ensemble, score mean/std, fresh calibration/conformal analysis, structural-domain flag, explicit abstention. | Colab ensemble run and an honest S1/S2 analysis; it is not deployable by default. |
@@ -25,7 +25,7 @@ until its audited artifacts have been generated and reviewed.
 - FAERS toxicity is observational and the 58 conflicting mapped structures remain excluded.
 - Older multi-task artifacts used before the recorded toxicity-logits loss contract, validation-role separation, and split-aware unreported-negative protocol are historical only; do not compare or ensemble them with new runs.
 - Explanations, attention, calibration, conformal sets, OOD flags, and abstention are research aids—not clinical evidence.
-- No candidate or ensemble may overwrite `backend/checkpoints/pxddi_model.pt` without a documented review and explicit approval.
+- No candidate or ensemble may overwrite `backend/checkpoints/auditddi_model.pt` without a documented review and explicit approval.
 - The supplied ChEMBL `chemreps` and UniProt mapping files are a structure corpus and target metadata, respectively; they do not contain molecule--target activity labels.
 - PharmGKB chemical--gene/pathway evidence must never be appended to TWOSIDES positive DDI labels or described as external DDI validation.
 - ChEMBL contrastive pretraining is an encoder warm start only. Its corpus excludes direct structures outside the DDI training split and its checkpoint cannot replace the deployed model automatically.

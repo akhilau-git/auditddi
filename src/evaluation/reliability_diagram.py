@@ -171,7 +171,7 @@ def plot_reliability_diagram(
         ax.grid(alpha=0.2)
 
     fig.suptitle(
-        'PxDDI Reliability Diagrams — Calibration across evaluation protocols',
+        'AuditDDI Reliability Diagrams — Calibration across evaluation protocols',
         fontsize=12,
         y=1.02,
     )

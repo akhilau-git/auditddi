@@ -219,7 +219,7 @@ def fetch_uniprot_sequence(
     2. Curated offline fallback dictionary (for CYP3A4, CYP2D6, PTGS2, EGFR).
     3. Official UniProt REST API (`https://rest.uniprot.org/uniprotkb/{accession}.fasta`).
     """
-    key = str(accession_or_gene).strip().upper()
+    key = accession_or_gene.strip().upper()
     accession = CANONICAL_TARGET_TO_UNIPROT.get(key, key)
 
     c_path: Path | None = None
@@ -275,7 +275,7 @@ def build_target_sequence_catalog(
 
     catalog: dict[str, str] = {}
     for tgt in targets:
-        clean_t = str(tgt).strip().upper()
+        clean_t = tgt.strip().upper()
         if not clean_t:
             continue
         try:
@@ -341,7 +341,7 @@ def _tokens_from_target_value(value: Any) -> list[str]:
 
 def update_master_nodes_with_uniprot(
     master_nodes_path: str | Path,
-    uniprot_dir: str | Path = "/content/drive/MyDrive/pxddi-data/uniprot",
+    uniprot_dir: str | Path | None = None,
     output_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Add only source-supported drug-target UniProt sequences to master nodes.
@@ -355,7 +355,14 @@ def update_master_nodes_with_uniprot(
         raise FileNotFoundError(f"Master nodes file not found: {nodes_p}")
     df = pd.read_csv(nodes_p)
 
-    u_dir = Path(uniprot_dir)
+    if uniprot_dir is None:
+        try:
+            from .path_resolver import resolve_data_base, resolve_dataset_subpath
+            u_dir = resolve_dataset_subpath(resolve_data_base(), 'UniProt')
+        except Exception:
+            u_dir = Path('/content/drive/MyDrive/auditddi-data/UniProt')
+    else:
+        u_dir = Path(uniprot_dir)
     json_path = u_dir / "target_sequences.json"
     catalog: dict[str, str] = {}
     if json_path.is_file():
@@ -437,8 +444,8 @@ def update_master_nodes_with_uniprot(
                         assigned_seq, assigned_acc = catalog_by_acc[acc], acc
                         assignment_sources.append(f"{col}:exact_target")
                         break
-                    if gene in catalog and len(str(catalog[gene]).strip()) > 20:
-                        assigned_seq = str(catalog[gene]).strip()
+                    if gene in catalog and len(catalog[gene].strip()) > 20:
+                        assigned_seq = catalog[gene].strip()
                         assigned_acc = acc or gene
                         assignment_sources.append(f"{col}:exact_target")
                         break

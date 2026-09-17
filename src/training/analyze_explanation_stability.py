@@ -16,11 +16,11 @@ from src.models.explanation_stability import compare_explanation_artifacts
 
 
 def _input_paths() -> list[Path]:
-    raw = os.environ.get('PXDDI_EXPLANATION_ARTIFACTS', '')
+    raw = os.environ.get('AUDITDDI_EXPLANATION_ARTIFACTS', '')
     paths = [Path(part.strip()) for part in raw.split(',') if part.strip()]
     if len(paths) < 2:
         raise ValueError(
-            'PXDDI_EXPLANATION_ARTIFACTS must contain at least two comma-separated '
+            'AUDITDDI_EXPLANATION_ARTIFACTS must contain at least two comma-separated '
             'candidate_occlusion_explanations.json paths.'
         )
     missing = [str(path) for path in paths if not path.is_file()]

@@ -85,7 +85,7 @@ def test_site_of_metabolism():
 
 def test_biophysical_model_integration_and_symmetry():
     import torch
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_EDGE_AWARE
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_EDGE_AWARE
     from src.data_prep.prepare_twosides import smiles_to_graph, FEATURE_SCHEMA_RICH
 
     smi_a = "CC(=O)Oc1ccccc1C(=O)O"
@@ -98,7 +98,7 @@ def test_biophysical_model_integration_and_symmetry():
     in_dim = g_a.x.size(1)
     edge_dim = g_a.edge_attr.size(1)
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_dim,
         edge_feature_dim=edge_dim,
         architecture_version=MODEL_ARCHITECTURE_EDGE_AWARE,

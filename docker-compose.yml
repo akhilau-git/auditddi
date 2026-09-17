@@ -7,14 +7,19 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/checkpoints:/app/backend/checkpoints:ro
+      - ./backend/state:/app/state
     environment:
       PORT: 8000
-      PXDDI_ALLOWED_ORIGINS: ${PXDDI_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-      PXDDI_TRUSTED_HOSTS: ${PXDDI_TRUSTED_HOSTS:-localhost,127.0.0.1,backend}
-      PXDDI_ENABLE_DOCS: ${PXDDI_ENABLE_DOCS:-false}
-      PXDDI_DEPLOYMENT_MODE: ${PXDDI_DEPLOYMENT_MODE:-development}
-      PXDDI_API_KEY: ${PXDDI_API_KEY:-}
-      PXDDI_RATE_LIMIT_PER_MINUTE: ${PXDDI_RATE_LIMIT_PER_MINUTE:-0}
+      AUDITDDI_ALLOWED_ORIGINS: ${AUDITDDI_ALLOWED_ORIGINS:-${PXDDI_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}}
+      AUDITDDI_TRUSTED_HOSTS: ${AUDITDDI_TRUSTED_HOSTS:-${PXDDI_TRUSTED_HOSTS:-localhost,127.0.0.1,backend}}
+      AUDITDDI_ENABLE_DOCS: ${AUDITDDI_ENABLE_DOCS:-${PXDDI_ENABLE_DOCS:-false}}
+      AUDITDDI_DEPLOYMENT_MODE: ${AUDITDDI_DEPLOYMENT_MODE:-${PXDDI_DEPLOYMENT_MODE:-development}}
+      AUDITDDI_API_KEY: ${AUDITDDI_API_KEY:-${PXDDI_API_KEY:-}}
+      AUDITDDI_RATE_LIMIT_PER_MINUTE: ${AUDITDDI_RATE_LIMIT_PER_MINUTE:-${PXDDI_RATE_LIMIT_PER_MINUTE:-0}}
+      AUDITDDI_ALLOW_UNSAFE_PICKLE: ${AUDITDDI_ALLOW_UNSAFE_PICKLE:-1}
+      AUDITDDI_AUTH_ENABLED: ${AUDITDDI_AUTH_ENABLED:-true}
+      AUDITDDI_AUTH_STATE_DIR: /app/state
+      AUDITDDI_AUTH_BOOTSTRAP_TOKEN: ${AUDITDDI_AUTH_BOOTSTRAP_TOKEN:-}
     read_only: true
     tmpfs:
       - /tmp
@@ -23,8 +28,8 @@ services:
     cap_drop:
       - ALL
     pids_limit: 256
-    mem_limit: ${PXDDI_BACKEND_MEMORY_LIMIT:-4g}
-    cpus: ${PXDDI_BACKEND_CPU_LIMIT:-2.0}
+    mem_limit: ${AUDITDDI_BACKEND_MEMORY_LIMIT:-${PXDDI_BACKEND_MEMORY_LIMIT:-4g}}
+    cpus: ${AUDITDDI_BACKEND_CPU_LIMIT:-${PXDDI_BACKEND_CPU_LIMIT:-2.0}}
   frontend:
     build: ./frontend
     ports:

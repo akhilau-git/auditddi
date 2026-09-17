@@ -51,7 +51,7 @@ from src.data_prep.splits import create_split_aware_binary_splits
 from src.models.ddi_model import (
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MULTIMODAL,
-    PxDDIModel,
+    AuditDDIModel,
 )
 
 REQUIRED_SPLIT_FILES = [
@@ -197,7 +197,7 @@ def ensure_benchmark_splits(
 
 
 def safe_forward_multimodal(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     batch: dict[str, Any],
     da: Any,
     db: Any,
@@ -249,7 +249,7 @@ def safe_forward_multimodal(
 
 
 def evaluate_loader(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     loader: Any,
     device: torch.device,
     is_multimodal: bool = False,
@@ -354,7 +354,7 @@ def train_benchmark_model(
     in_channels = sample_batch['drug_a'].x.size(1)
     edge_dim = sample_batch['drug_a'].edge_attr.size(1)
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_channels,
         hidden_channels=64,
         edge_feature_dim=edge_dim,

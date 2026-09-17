@@ -1,4 +1,4 @@
-"""Offline perturbation explanations for experimental PxDDI candidates.
+"""Offline perturbation explanations for experimental AuditDDI candidates.
 
 The deployed legacy API explanation remains separate.  This module is designed
 for a small, auditable set of candidate-evaluation examples: it measures how a
@@ -39,7 +39,8 @@ def _model_device(model) -> torch.device:
 
 
 def _single_graph_batch(graph: Data, device: torch.device) -> Batch:
-    return Batch.from_data_list([graph.clone()]).to(device)
+    batch: Any = Batch.from_data_list([graph.clone()])
+    return batch.to(device)
 
 
 def raw_pair_probability(model, graph_a: Data, graph_b: Data) -> float:
@@ -73,10 +74,11 @@ def _retain_only_atoms(graph: Data, atom_indices: list[int]) -> Data:
 
 
 def _unique_undirected_bonds(graph: Data) -> list[tuple[int, int]]:
-    if not hasattr(graph, 'edge_attr'):
+    if not hasattr(graph, 'edge_attr') or getattr(graph, 'edge_index', None) is None:
         return []
+    assert graph.edge_index is not None
     edge_pairs = graph.edge_index.detach().cpu().t().tolist()
-    return sorted({tuple(sorted((int(source), int(target)))) for source, target in edge_pairs})
+    return sorted({(min(int(source), int(target)), max(int(source), int(target))) for source, target in edge_pairs})
 
 
 def _mask_bonds(graph: Data, bonds: list[tuple[int, int]]) -> Data:
@@ -138,6 +140,8 @@ def _atom_occlusion(
     baseline: float,
 ) -> list[dict[str, Any]]:
     graph = graph_a if side == 'a' else graph_b
+    if graph.x is None:
+        return []
     symbols = _atom_symbols(smiles, int(graph.x.shape[0]))
     entries = []
     for atom_index in range(graph.x.shape[0]):
@@ -148,8 +152,8 @@ def _atom_occlusion(
         )
         score_after_mask = raw_pair_probability(model, masked_a, masked_b)
         entries.append({
-            'component_index': int(atom_index),
-            'atom_index': int(atom_index),
+            'component_index': atom_index,
+            'atom_index': atom_index,
             'atom_symbol': symbols[atom_index],
             'raw_probability_after_mask': score_after_mask,
             'raw_probability_change': baseline - score_after_mask,
@@ -177,8 +181,8 @@ def _bond_occlusion(
         )
         score_after_mask = raw_pair_probability(model, masked_a, masked_b)
         entries.append({
-            'component_index': int(bond_index),
-            'bond_atom_indices': [int(bond[0]), int(bond[1])],
+            'component_index': bond_index,
+            'bond_atom_indices': [bond[0], bond[1]],
             'bond_type': descriptions[bond],
             'raw_probability_after_mask': score_after_mask,
             'raw_probability_change': baseline - score_after_mask,
@@ -207,7 +211,7 @@ def _motif_occlusion(
         )
         score_after_mask = raw_pair_probability(model, masked_a, masked_b)
         entries.append({
-            'component_index': int(motif_index),
+            'component_index': motif_index,
             'motif_name': motif_names[motif_index],
             'input_count': float(value),
             'raw_probability_after_mask': score_after_mask,
@@ -233,7 +237,7 @@ def _top_cross_attention_pairs(
     top_k: int,
 ) -> list[dict[str, Any]]:
     flattened = weights.detach().cpu().reshape(-1)
-    take = min(top_k, int(flattened.numel()))
+    take = min(top_k, flattened.numel())
     if take == 0:
         return []
     values, indices = torch.topk(flattened, k=take)
@@ -313,8 +317,10 @@ def _cross_attention_associations(
             a_to_b, b_to_a = model.cross_drug_attention_maps(batch_a, batch_b)
     finally:
         model.train(was_training)
-    symbols_a = _atom_symbols(smiles_a, int(graph_a.x.shape[0]))
-    symbols_b = _atom_symbols(smiles_b, int(graph_b.x.shape[0]))
+    num_a = int(graph_a.x.shape[0]) if graph_a.x is not None else 0
+    num_b = int(graph_b.x.shape[0]) if graph_b.x is not None else 0
+    symbols_a = _atom_symbols(smiles_a, num_a)
+    symbols_b = _atom_symbols(smiles_b, num_b)
     return {
         'available': True,
         'interpretation_warning': (
@@ -530,7 +536,7 @@ def select_representative_indices(
         set(range(len(labels))) - set(selected),
         key=lambda item: (-abs(predictions[item] - threshold), item),
     )
-    return selected + [int(index) for index in remaining[: maximum_examples - len(selected)]]
+    return selected + list(remaining[: maximum_examples - len(selected)])
 
 
 def explain_multimodal_pair(

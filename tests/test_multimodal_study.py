@@ -114,7 +114,7 @@ def test_run_full_study_keyword_aliases():
 
 
 def test_memory_dropout_and_noise():
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
     from src.data_prep.prepare_twosides import smiles_to_graph, FEATURE_SCHEMA_RICH
 
     g = smiles_to_graph("CCO", feature_schema=FEATURE_SCHEMA_RICH, include_fingerprint_features=True)
@@ -122,7 +122,7 @@ def test_memory_dropout_and_noise():
     assert g.x is not None
     assert g.edge_attr is not None
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=g.x.size(1),
         hidden_channels=32,
         edge_feature_dim=g.edge_attr.size(1),
@@ -187,7 +187,7 @@ def test_model_from_checkpoint_auto_detection():
 
 
 def test_pdb_and_geo_encoders_forward():
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
     from src.data_prep.prepare_twosides import smiles_to_graph, FEATURE_SCHEMA_RICH
 
     g1 = smiles_to_graph("CC(=O)Oc1ccccc1C(=O)O", feature_schema=FEATURE_SCHEMA_RICH, include_fingerprint_features=True)
@@ -195,7 +195,7 @@ def test_pdb_and_geo_encoders_forward():
     assert g1 is not None and g1.x is not None and g1.edge_attr is not None
     assert g2 is not None and g2.x is not None and g2.edge_attr is not None
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=g1.x.size(1),
         hidden_channels=32,
         edge_feature_dim=g1.edge_attr.size(1),
@@ -237,7 +237,7 @@ def test_pdb_and_geo_encoders_forward():
 
 
 def test_inductive_bio_features_and_cross_modal_attention():
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
     from src.data_prep.prepare_twosides import smiles_to_graph, FEATURE_SCHEMA_RICH
 
     g1 = smiles_to_graph("CC(=O)Oc1ccccc1C(=O)O", feature_schema=FEATURE_SCHEMA_RICH, include_fingerprint_features=True)
@@ -245,7 +245,7 @@ def test_inductive_bio_features_and_cross_modal_attention():
     assert g1 is not None and g1.x is not None and g1.edge_attr is not None
     assert g2 is not None and g2.x is not None and g2.edge_attr is not None
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=g1.x.size(1),
         hidden_channels=64,
         edge_feature_dim=g1.edge_attr.size(1),
@@ -354,9 +354,9 @@ def test_inductive_bio_features_and_cross_modal_attention():
 
 
 def test_extract_compatible_encoder_weights_from_checkpoint(tmp_path):
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
 
-    source_model = PxDDIModel(
+    source_model = AuditDDIModel(
         in_channels=79,
         hidden_channels=64,
         edge_feature_dim=10,
@@ -365,7 +365,7 @@ def test_extract_compatible_encoder_weights_from_checkpoint(tmp_path):
     ckpt_path = tmp_path / "candidate_model.pt"
     torch.save({"model_state_dict": source_model.state_dict()}, ckpt_path)
 
-    target_model = PxDDIModel(
+    target_model = AuditDDIModel(
         in_channels=79,
         hidden_channels=64,
         edge_feature_dim=10,

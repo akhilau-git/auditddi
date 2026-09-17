@@ -1,7 +1,16 @@
 [tool.pyright]
-extraPaths = [".", "src", "backend"]
+extraPaths = [
+    ".",
+    "src",
+    "backend",
+    "C:/Users/pavan/AppData/Local/Programs/Python/Python311/Lib/site-packages"
+]
 
 [tool.pytest.ini_options]
 # Keep `pytest` and `python -m pytest` equivalent when run from the project
 # root.  The application imports `src` and `backend` as root-level packages.
-pythonpath = ["."]
+pythonpath = [".", "src"]
+addopts = "-m 'not live_network'"
+markers = [
+    "live_network: verifies a live third-party service; excluded from the offline test suite",
+]

@@ -10,7 +10,7 @@ from src.models.ensemble import (
     summarize_safe_abstention,
     validate_ensemble_member_manifests,
 )
-from src.training.run_fixed_split_ensemble import _prediction_path
+from src.training.run_fixed_split_ensemble import _positive_int, _prediction_path
 from src.training.train_full_pipeline_v2 import get_file_hash
 
 
@@ -123,3 +123,9 @@ def test_ensemble_reads_validation_and_test_prediction_manifest_field_names(tmp_
 
     assert _prediction_path(manifest, 'Validation') == validation_path
     assert _prediction_path(manifest, 'S1') == test_path
+
+
+def test_ensemble_reads_documented_auditddi_environment_variables(monkeypatch):
+    monkeypatch.setenv('AUDITDDI_ENSEMBLE_SPLIT_SEED', '73')
+
+    assert _positive_int('ENSEMBLE_SPLIT_SEED', 42) == 73

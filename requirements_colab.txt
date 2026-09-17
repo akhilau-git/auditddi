@@ -1,4 +1,4 @@
-# Google Colab dependencies for PxDDI training.
+# Google Colab dependencies for AuditDDI training.
 #
 # PyTorch is intentionally excluded so Colab retains its GPU-optimised build.
 # Colab updates its Python version over time, so these are compatibility bounds

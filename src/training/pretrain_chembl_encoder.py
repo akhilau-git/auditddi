@@ -65,39 +65,52 @@ def _unit_interval(name: str, default: float) -> float:
     return value
 
 
-DATA_BASE = Path(os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data'))
-RESULTS_BASE = Path(os.environ.get('PXDDI_RESULTS_BASE', '/content/drive/MyDrive/pxddi-results'))
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base,
+    resolve_dataset_subpath,
+    get_auditddi_env,
+)
+
+DATA_BASE = resolve_data_base()
+RESULTS_BASE = resolve_results_base()
 CHEMREPS_PATH = Path(
-    os.environ.get('PXDDI_CHEMBL_CHEMREPS_PATH', DATA_BASE / 'chembl' / 'chembl_37_chemreps.txt.gz')
+    get_auditddi_env(
+        'CHEMBL_CHEMREPS_PATH',
+        resolve_dataset_subpath(DATA_BASE, 'chembl', 'chembl_37_chemreps.txt.gz')
+    )
 )
 TWOSIDES_EDGES = Path(
-    os.environ.get('PXDDI_TWOSIDES_EDGES_PATH', DATA_BASE / 'twosides' / 'drug_drug_edges.csv')
+    get_auditddi_env(
+        'TWOSIDES_EDGES_PATH',
+        resolve_dataset_subpath(DATA_BASE, 'twosides', 'drug_drug_edges.csv')
+    )
 )
-SPLIT_SEED = _positive_int('PXDDI_SPLIT_SEED', 42)
-PRETRAIN_SEED = _positive_int('PXDDI_PRETRAIN_SEED', 2026)
-DATA_CAP = _positive_int('PXDDI_DATA_CAP', 200000)
-MAXIMUM_MOLECULES = _positive_int('PXDDI_PRETRAIN_MAX_MOLECULES', 50000)
-EPOCHS = _positive_int('PXDDI_PRETRAIN_EPOCHS', 20)
-BATCH_SIZE = _positive_int('PXDDI_PRETRAIN_BATCH_SIZE', 256)
-HIDDEN_CHANNELS = _positive_int('PXDDI_HIDDEN_CHANNELS', 128)
-ATOM_MASK_RATE = _unit_interval('PXDDI_PRETRAIN_ATOM_MASK_RATE', 0.15)
-BOND_MASK_RATE = _unit_interval('PXDDI_PRETRAIN_BOND_MASK_RATE', 0.15)
-TEMPERATURE = float(os.environ.get('PXDDI_PRETRAIN_TEMPERATURE', '0.2'))
+SPLIT_SEED = _positive_int('SPLIT_SEED', 42)
+PRETRAIN_SEED = _positive_int('PRETRAIN_SEED', 2026)
+DATA_CAP = _positive_int('DATA_CAP', 200000)
+MAXIMUM_MOLECULES = _positive_int('PRETRAIN_MAX_MOLECULES', 50000)
+EPOCHS = _positive_int('PRETRAIN_EPOCHS', 20)
+BATCH_SIZE = _positive_int('PRETRAIN_BATCH_SIZE', 256)
+HIDDEN_CHANNELS = _positive_int('HIDDEN_CHANNELS', 128)
+ATOM_MASK_RATE = _unit_interval('PRETRAIN_ATOM_MASK_RATE', 0.15)
+BOND_MASK_RATE = _unit_interval('PRETRAIN_BOND_MASK_RATE', 0.15)
+TEMPERATURE = float(get_auditddi_env('PRETRAIN_TEMPERATURE', '0.2'))
 if TEMPERATURE <= 0:
-    raise ValueError('PXDDI_PRETRAIN_TEMPERATURE must be positive.')
-LEARNING_RATE = float(os.environ.get('PXDDI_PRETRAIN_LEARNING_RATE', '0.001'))
+    raise ValueError('AUDITDDI_PRETRAIN_TEMPERATURE must be positive.')
+LEARNING_RATE = float(get_auditddi_env('PRETRAIN_LEARNING_RATE', '0.001'))
 if LEARNING_RATE <= 0:
-    raise ValueError('PXDDI_PRETRAIN_LEARNING_RATE must be positive.')
-NEGATIVE_SAMPLING_STRATEGY = os.environ.get('PXDDI_NEGATIVE_SAMPLING_STRATEGY', 'degree_matched')
+    raise ValueError('AUDITDDI_PRETRAIN_LEARNING_RATE must be positive.')
+NEGATIVE_SAMPLING_STRATEGY = str(get_auditddi_env('NEGATIVE_SAMPLING_STRATEGY', 'degree_matched'))
 RUN_ID = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 RUN_DIR = Path(
-    os.environ.get(
-        'PXDDI_PRETRAIN_ARTIFACTS_DIR',
+    get_auditddi_env(
+        'PRETRAIN_ARTIFACTS_DIR',
         RESULTS_BASE / 'pretraining' / f'chembl_edge_aware_{RUN_ID}',
     )
 )
 CHECKPOINT_PATH = Path(
-    os.environ.get('PXDDI_PRETRAIN_CHECKPOINT_PATH', RUN_DIR / 'chembl_pretrained_encoder.pt')
+    get_auditddi_env('PRETRAIN_CHECKPOINT_PATH', RUN_DIR / 'chembl_pretrained_encoder.pt')
 )
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -322,8 +335,8 @@ def main() -> None:
         'training_wall_clock_seconds': elapsed,
         'skipped_singleton_contrastive_batches': skipped_singleton_batches,
         'promotion_policy': (
-            'This encoder is a research warm start only. It does not replace or '
-            'serve backend/checkpoints/pxddi_model.pt.'
+            'This run created an encoder-only pretraining artifact. It does not '
+            'serve backend/checkpoints/auditddi_model.pt.'
         ),
     }
     _write_json(RUN_DIR / 'pretraining_manifest.json', manifest)

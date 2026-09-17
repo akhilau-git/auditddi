@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
-from scipy import sparse
+from scipy import sparse  # type: ignore[import-untyped]
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import log_loss
 
@@ -374,7 +374,7 @@ def main() -> None:
             'protocol': 'legacy_pre_split_v1',
             'effective_positive_pairs': int((full_dataset['label'] == 1.0).sum()),
             'sampled_unreported_negative_pairs': int((full_dataset['label'] == 0.0).sum()),
-            'total_pair_rows_before_split': int(len(full_dataset)),
+            'total_pair_rows_before_split': len(full_dataset),
             'negative_label_meaning': NEGATIVE_LABEL_MEANING,
         }
         splits = create_splits(full_dataset, drug_a_col='source', drug_b_col='target', seed=SPLIT_SEED)
@@ -455,8 +455,8 @@ def main() -> None:
             best_epoch = epoch
             epochs_without_improvement = 0
             safe_save_baseline_checkpoint(
-                best_coefficients,
-                best_intercept,
+                coefficients,
+                intercept,
                 {
                     'epoch': epoch,
                     'validation_auroc': best_auroc,
@@ -606,7 +606,7 @@ def main() -> None:
         'model_summary': {
             'model_class': 'SGDClassifier',
             'model_architecture': 'ecfp_sgd_logistic_v1',
-            'trainable_parameters': int(best_coefficients.size + 1),
+            'trainable_parameters': best_coefficients.size + 1,
             'pair_representation': 'ECFP_a_plus_b + absolute_ECFP_a_minus_b',
             'output_heads': ['interaction_risk'],
         },

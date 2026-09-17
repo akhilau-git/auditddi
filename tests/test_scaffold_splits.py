@@ -1,4 +1,4 @@
-"""Tests for the separate scaffold-disjoint PxDDI protocol."""
+"""Tests for the separate scaffold-disjoint AuditDDI protocol."""
 
 import pandas as pd
 import pytest

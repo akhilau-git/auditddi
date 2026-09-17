@@ -18,11 +18,11 @@ There are three standard sources used in AuditDDI:
    - Returns exact primary amino acid sequences (e.g., `MALIPDLAMETWLLLAVSLVLLYLYGTHSHGLFK...`).
 
 2. **ChEMBL-to-UniProt Target Mapping (`chembl_uniprot_mapping.txt`)**:
-   - Location in dataset: `pxddi-data/chembl/chembl_uniprot_mapping.txt`.
+   - Location in dataset: `auditddi-data/chembl/chembl_uniprot_mapping.txt`.
    - Links ChEMBL target identifiers (`CHEMBL203`, `CHEMBL240`) to standardized UniProt accessions (`P08684`, `P00533`).
 
 3. **BindingDB Target Cross-References**:
-   - Tabular export in `pxddi-data/BindingDB` contains explicit columns `uniprot_id` (`P23219`, `P29274`, `P04150`).
+   - Tabular export in `auditddi-data/BindingDB` contains explicit columns `uniprot_id` (`P23219`, `P29274`, `P04150`).
 
 ### 3. How UniProt Data Powers the "Cold-Target / Protein" Scenario:
 - **The Problem**: Currently, target information is represented as a fixed 50-dimensional multi-hot presence vector. If an existing drug or new compound is tested against a protein not in the predefined 50-gene vocabulary, the model receives a zero vector, capping performance at ~0.65 AUC.
@@ -59,7 +59,7 @@ There are three standard sources used in AuditDDI:
   - **What**: Connect ESM-2 target sequence embeddings into `CrossModalBioAttention`.
   - **Why**: Allows molecular graphs of novel compounds to attend to amino-acid binding domains.
   - **How**:
-    - Added `use_protein_sequence_encoder: bool = False` to `PxDDIModel` and `model_from_checkpoint`.
+    - Added `use_protein_sequence_encoder: bool = False` to `AuditDDIModel` and `model_from_checkpoint`.
     - Integrated `target_sequences` into `MolecularCache`, `CachedDDIPairDataset`, and `multimodal_collate_fn`.
     - Fully regression tested with 218 passing automated tests.
 

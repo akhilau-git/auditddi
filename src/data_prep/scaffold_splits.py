@@ -1,6 +1,6 @@
 """Scaffold-disjoint DDI splitting for an explicitly separate evaluation run.
 
-This module is intentionally not mixed into PxDDI's standard transductive/S1/S2
+This module is intentionally not mixed into AuditDDI's standard transductive/S1/S2
 run.  A scaffold-disjoint result must train only on the scaffold-training
 partition, otherwise the comparison would leak the held-out chemical framework.
 """
@@ -29,7 +29,7 @@ def murcko_scaffold_key(smiles: str) -> str:
     isomeric SMILES as an explicit acyclic fallback.  This is conservative: an
     acyclic molecule cannot appear under the same fallback key in two splits.
     """
-    molecule = Chem.MolFromSmiles(str(smiles).strip())
+    molecule = Chem.MolFromSmiles(smiles.strip())
     if molecule is None:
         raise ValueError(f'Cannot derive a scaffold from invalid SMILES: {smiles!r}.')
     scaffold = MurckoScaffold.GetScaffoldForMol(molecule)
@@ -54,8 +54,8 @@ def _partition_scaffolds(
         raise ValueError('At least three unique scaffolds are required.')
     ordered = np.asarray(sorted(keys), dtype=object)
     shuffled = np.random.default_rng(seed).permutation(ordered)
-    test_count = max(1, int(round(test_fraction * len(shuffled))))
-    validation_count = max(1, int(round(validation_fraction * len(shuffled))))
+    test_count = max(1, round(test_fraction * len(shuffled)))
+    validation_count = max(1, round(validation_fraction * len(shuffled)))
     if test_count + validation_count >= len(shuffled):
         raise ValueError('Not enough scaffold groups remain for a training partition.')
     assignment = {str(key): 'scaffold_test' for key in shuffled[:test_count]}
@@ -94,7 +94,7 @@ def create_scaffold_disjoint_splits(
     scaffold_cache: dict[str, str] = {}
 
     def scaffold_for(smiles: str) -> str:
-        value = str(smiles)
+        value = smiles
         if value not in scaffold_cache:
             scaffold_cache[value] = murcko_scaffold_key(value)
         return scaffold_cache[value]
@@ -123,7 +123,7 @@ def create_scaffold_disjoint_splits(
         if splits[name].empty
     ]
     if empty_required:
-        counts = {name: int(len(frame)) for name, frame in splits.items()}
+        counts = {name: len(frame) for name, frame in splits.items()}
         raise ValueError(
             'Scaffold partitioning left a required role empty. Adjust the seed or '
             f'fractions; counts={counts}; empty={empty_required}.'
@@ -145,17 +145,17 @@ def create_scaffold_disjoint_splits(
         raise RuntimeError('Scaffold partition leakage detected while constructing splits.')
     audit = {
         'method': SCAFFOLD_SPLIT_METHOD,
-        'seed': int(seed),
+        'seed': seed,
         'validation_fraction_target': float(validation_fraction),
         'test_fraction_target': float(test_fraction),
-        'unique_drug_structures': int(len(scaffold_cache)),
-        'unique_scaffold_groups': int(len(assignment)),
+        'unique_drug_structures': len(scaffold_cache),
+        'unique_scaffold_groups': len(assignment),
         'scaffold_group_counts': {
-            partition: int(sum(value == partition for value in assignment.values()))
+            partition: sum(value == partition for value in assignment.values())
             for partition in ('scaffold_train', 'scaffold_validation', 'scaffold_test')
         },
-        'pair_row_counts': {name: int(len(frame)) for name, frame in splits.items()},
-        'cross_partition_pairs_excluded': int(len(excluded)),
+        'pair_row_counts': {name: len(frame) for name, frame in splits.items()},
+        'cross_partition_pairs_excluded': len(excluded),
         'acyclic_fallback': 'canonical_isomeric_smiles',
         'interpretation_warning': (
             'Pairs spanning scaffold roles are intentionally excluded. This is a '

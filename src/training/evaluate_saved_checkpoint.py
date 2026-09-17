@@ -20,27 +20,31 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(REPOSITORY_SRC) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_SRC))
 
+from data_prep.path_resolver import get_auditddi_env
+
 def _checkpoint_path_from_environment() -> Path:
-    raw_path = os.environ.get('PXDDI_CHECKPOINT_PATH')
+    raw_path = get_auditddi_env('CHECKPOINT_PATH')
     if not raw_path:
         raise ValueError(
-            'Set PXDDI_CHECKPOINT_PATH to the one checkpoint you intend to evaluate. '
+            'Set AUDITDDI_CHECKPOINT_PATH to the one checkpoint you intend to evaluate. '
             'This script does not search fallback locations.'
         )
     path = Path(raw_path)
     if not path.is_file():
-        raise FileNotFoundError(f'PXDDI_CHECKPOINT_PATH does not exist: {path}')
+        raise FileNotFoundError(f'AUDITDDI_CHECKPOINT_PATH does not exist: {path}')
     return path
 
 
 def _set_or_check_environment(name: str, expected: object) -> None:
     value = str(expected).lower() if isinstance(expected, bool) else str(expected)
-    existing = os.environ.get(name)
-    if existing is not None and existing != value:
-        raise ValueError(
-            f'{name}={existing!r} conflicts with the selected checkpoint value {value!r}.'
-        )
-    os.environ[name] = value
+    suffix = name.replace('AUDITDDI_', '').replace('PXDDI_', '')
+    for env_k in [f'AUDITDDI_{suffix}', f'PXDDI_{suffix}']:
+        existing = os.environ.get(env_k)
+        if existing is not None and existing != value:
+            raise ValueError(
+                f'{env_k}={existing!r} conflicts with the selected checkpoint value {value!r}.'
+            )
+        os.environ[env_k] = value
 
 
 def configure_evaluation_from_checkpoint(checkpoint_path: Path) -> None:
@@ -50,16 +54,16 @@ def configure_evaluation_from_checkpoint(checkpoint_path: Path) -> None:
         raise ValueError('Selected checkpoint is not a metadata dictionary.')
     provenance = checkpoint.get('evaluation_provenance')
     required = {
-        'model_architecture': 'PXDDI_MODEL_ARCHITECTURE',
-        'hidden_channels': 'PXDDI_HIDDEN_CHANNELS',
-        'data_cap': 'PXDDI_DATA_CAP',
-        'model_seed': 'PXDDI_MODEL_SEED',
-        'split_seed': 'PXDDI_SPLIT_SEED',
-        'negative_sampling_strategy': 'PXDDI_NEGATIVE_SAMPLING_STRATEGY',
-        'negative_sampling_protocol': 'PXDDI_NEGATIVE_SAMPLING_PROTOCOL',
-        'use_toxicity_pair_features': 'PXDDI_USE_TOXICITY_PAIR_FEATURES',
-        'toxicity_loss_weight': 'PXDDI_TOXICITY_LOSS_WEIGHT',
-        'model_selection_validation_fraction': 'PXDDI_MODEL_SELECTION_VALIDATION_FRACTION',
+        'model_architecture': 'AUDITDDI_MODEL_ARCHITECTURE',
+        'hidden_channels': 'AUDITDDI_HIDDEN_CHANNELS',
+        'data_cap': 'AUDITDDI_DATA_CAP',
+        'model_seed': 'AUDITDDI_MODEL_SEED',
+        'split_seed': 'AUDITDDI_SPLIT_SEED',
+        'negative_sampling_strategy': 'AUDITDDI_NEGATIVE_SAMPLING_STRATEGY',
+        'negative_sampling_protocol': 'AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL',
+        'use_toxicity_pair_features': 'AUDITDDI_USE_TOXICITY_PAIR_FEATURES',
+        'toxicity_loss_weight': 'AUDITDDI_TOXICITY_LOSS_WEIGHT',
+        'model_selection_validation_fraction': 'AUDITDDI_MODEL_SELECTION_VALIDATION_FRACTION',
     }
     if not isinstance(provenance, dict):
         raise ValueError(
@@ -74,6 +78,7 @@ def configure_evaluation_from_checkpoint(checkpoint_path: Path) -> None:
         )
     for checkpoint_key, environment_name in required.items():
         _set_or_check_environment(environment_name, provenance[checkpoint_key])
+    os.environ['AUDITDDI_EVALUATE_ONLY'] = '1'
     os.environ['PXDDI_EVALUATE_ONLY'] = '1'
 
 
@@ -84,7 +89,7 @@ from src.training.train_full_pipeline_v2 import main
 
 if __name__ == "__main__":
     print("=" * 72)
-    print("  PxDDI: Provenance-Checked Evaluation from Saved Checkpoint")
+    print("  AuditDDI: Provenance-Checked Evaluation from Saved Checkpoint")
     print("  Training Status: ALREADY COMPLETED (0 training epochs will be run)")
     print("=" * 72)
     main()

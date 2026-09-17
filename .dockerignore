@@ -13,5 +13,10 @@ venv
 notebooks
 tests
 backend/plots
+backend/auditddi-results
 backend/pxddi-results
 backend/latest_results
+# Historical experiment exports are not runtime dependencies.  Excluding them
+# keeps the inference-image build context small and avoids shipping training
+# output into a production service.
+backend/new results 5-9-26

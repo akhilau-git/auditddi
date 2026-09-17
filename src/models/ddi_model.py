@@ -24,6 +24,7 @@ MODEL_ARCHITECTURE_ABLATION_FAERS = 'auditddi_ablation_faers'
 
 
 def architecture_uses_edge_features(architecture_version: str) -> bool:
+    
     """Return whether a checkpoint consumes rich atom and bond graph features."""
     return architecture_version in {
         MODEL_ARCHITECTURE_EDGE_AWARE,
@@ -111,7 +112,7 @@ def model_from_checkpoint(checkpoint):
     arch = checkpoint.get('architecture_version', MODEL_ARCHITECTURE_LEGACY)
     use_clin_tox = bool(checkpoint.get('use_clinical_toxicity', arch in {MODEL_ARCHITECTURE_MULTIMODAL, MODEL_ARCHITECTURE_ABLATION_FAERS}))
 
-    return PxDDIModel(
+    return AuditDDIModel(
         in_channels=checkpoint['in_channels'],
         hidden_channels=checkpoint['hidden_channels'],
         use_chemberta=checkpoint.get('use_chemberta', False),
@@ -187,7 +188,7 @@ class CrossModalGeneAttention(nn.Module):
 CrossModalBioAttention = CrossModalGeneAttention
 
 
-class PxDDIModel(nn.Module):
+class AuditDDIModel(nn.Module):
     def __init__(
         self,
         in_channels,
@@ -843,7 +844,9 @@ class PxDDIModel(nn.Module):
             ])
         if self.use_clinical_toxicity:
             if clinical_tox_a is not None and clinical_tox_b is not None:
-                features.append(torch.stack([clinical_tox_a.float().view(-1), clinical_tox_b.float().view(-1)], dim=1))
+                cta = clinical_tox_a.float().view(-1)
+                ctb = clinical_tox_b.float().view(-1)
+                features.append(torch.stack([cta + ctb, torch.abs(cta - ctb)], dim=1))
             else:
                 features.append(torch.zeros((ea.size(0), 2), device=ea.device, dtype=ea.dtype))
 
@@ -1083,4 +1086,4 @@ class PxDDIModel(nn.Module):
         )
 
 
-AuditDDIModel = PxDDIModel
+PxDDIModel = AuditDDIModel

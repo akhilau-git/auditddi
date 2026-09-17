@@ -58,7 +58,7 @@ def encode_multihot_gene_vector(
     vocabulary: list[str],
 ) -> list[int]:
     """Encode a drug's gene associations into a binary multi-hot vector."""
-    gene_set = {str(g).strip().upper() for g in genes}
+    gene_set = {g.strip().upper() for g in genes}
     return [1 if vocab_gene in gene_set else 0 for vocab_gene in vocabulary]
 
 
@@ -162,7 +162,7 @@ def build_unified_graph(
 
         bdb_data = bindingdb_lookup.get(can_smi)
         bdb_targets = bdb_data[0] if bdb_data else {}
-        is_bdb_active = bool(bdb_data is not None)
+        is_bdb_active = bdb_data is not None
 
         node = DrugNode(
             drug_id=can_smi,
@@ -182,8 +182,8 @@ def build_unified_graph(
     edge_seen = set()
     skipped_self_loops = 0
 
-    for _, row in df_edges.iterrows():
-        raw_a, raw_b = str(row['source']), str(row['target'])
+    for row in df_edges.itertuples(index=False):
+        raw_a, raw_b, itype = str(row[0]), str(row[1]), str(row[2])
         if raw_a not in smiles_map or raw_b not in smiles_map:
             continue
         can_a, _ = smiles_map[raw_a]
@@ -193,7 +193,7 @@ def build_unified_graph(
             skipped_self_loops += 1
             continue
 
-        edge_key = (min(can_a, can_b), max(can_a, can_b), str(row['interaction_type']))
+        edge_key = (min(can_a, can_b), max(can_a, can_b), itype)
         if edge_key in edge_seen:
             continue
         edge_seen.add(edge_key)
@@ -201,7 +201,7 @@ def build_unified_graph(
         edge = DDIEdge(
             drug_a_id=can_a,
             drug_b_id=can_b,
-            interaction_type=str(row['interaction_type']),
+            interaction_type=itype,
             interaction_source='TWOSIDES',
             evidence_count=1,
             split_group='unassigned',
@@ -315,7 +315,7 @@ def update_master_nodes_with_faers(
     df_nodes['toxicity_score'] = updated_scores
     df_nodes['n_faers_reports'] = updated_reports
 
-    new_coverage = int(df_nodes['toxicity_score'].notna().sum())
+    new_coverage = sum(1 for s in updated_scores if s is not None and pd.notna(s))
     total_nodes = len(df_nodes)
     cov_pct = (new_coverage / total_nodes * 100.0) if total_nodes > 0 else 0.0
 
@@ -339,4 +339,83 @@ def update_master_nodes_with_faers(
     print('=' * 70)
 
     return df_nodes, summary
+
+
+def main() -> None:
+    import argparse
+    from .path_resolver import resolve_data_base, resolve_results_base, resolve_dataset_subpath
+
+    parser = argparse.ArgumentParser(description="Construct the Unified Multimodal Heterogeneous Graph for AuditDDI.")
+    parser.add_argument("--data-base", type=str, default=None, help="Root folder containing dataset subfolders")
+    parser.add_argument("--twosides-edges", type=str, default=None, help="Path to TWOSIDES drug_drug_edges.csv")
+    parser.add_argument("--pharmgkb-profiles", type=str, default=None, help="Path to PharmGKB gene profiles CSV")
+    parser.add_argument("--faers-bridge", type=str, default=None, help="Path to FAERS safety signals CSV")
+    parser.add_argument("--bindingdb-dir", type=str, default=None, help="Path to BindingDB directory")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for master graph tables")
+    parser.add_argument("--top-k-genes", type=int, default=DEFAULT_TOP_GENES, help="Number of top PharmGKB genes")
+    parser.add_argument("--top-k-targets", type=int, default=50, help="Number of top BindingDB targets")
+
+    args = parser.parse_args()
+
+    data_base = Path(args.data_base) if args.data_base else resolve_data_base()
+    output_dir = Path(args.output_dir) if args.output_dir else (resolve_results_base() / "unified_graph")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    twosides_edges = args.twosides_edges
+    if not twosides_edges:
+        twosides_edges = str(resolve_dataset_subpath(data_base, "twosides", "drug_drug_edges.csv"))
+
+    pharmgkb_profiles = args.pharmgkb_profiles
+    if not pharmgkb_profiles:
+        try:
+            cand = resolve_dataset_subpath(data_base, "pharmgkb")
+            csvs = list(cand.glob("*.csv")) + list(cand.glob("*.tsv"))
+            pharmgkb_profiles = str(csvs[0]) if csvs else None
+        except Exception:
+            pharmgkb_profiles = None
+
+    faers_bridge = args.faers_bridge
+    if not faers_bridge:
+        try:
+            cand = resolve_results_base() / "faers_signals" / "faers_safety_signals.csv"
+            faers_bridge = str(cand) if cand.is_file() else None
+        except Exception:
+            faers_bridge = None
+
+    bindingdb_dir = args.bindingdb_dir
+    if not bindingdb_dir:
+        try:
+            cand = resolve_dataset_subpath(data_base, "bindingdb")
+            bindingdb_dir = str(cand) if cand.is_dir() else None
+        except Exception:
+            bindingdb_dir = None
+
+    print("=" * 75)
+    print("  AUDITDDI: UNIFIED MULTIMODAL HETEROGENEOUS GRAPH BUILDER")
+    print(f"  Data Base Directory   : {data_base}")
+    print(f"  TWOSIDES Edges File   : {twosides_edges}")
+    print(f"  PharmGKB Profiles     : {pharmgkb_profiles}")
+    print(f"  FAERS Bridge File     : {faers_bridge}")
+    print(f"  BindingDB Directory   : {bindingdb_dir}")
+    print(f"  Output Directory      : {output_dir}")
+    print("=" * 75)
+
+    catalog, summary = build_unified_graph(
+        twosides_edges_path=twosides_edges,
+        pharmgkb_profiles_path=pharmgkb_profiles,
+        faers_bridge_path=faers_bridge,
+        bindingdb_dir=bindingdb_dir,
+        output_dir=output_dir,
+        top_k_genes=args.top_k_genes,
+        top_k_targets=args.top_k_targets,
+    )
+
+    print("\n[OK] Unified Graph construction succeeded.")
+    print(f"Master Nodes exported to: {summary.get('exported_nodes_path')}")
+    print(f"Master Edges exported to: {summary.get('exported_edges_path')}")
+
+
+if __name__ == '__main__':
+    main()
+
 

@@ -1,7 +1,7 @@
 """Leakage-aware ChEMBL corpus selection for graph self-supervised pretraining.
 
 This module deliberately treats ChEMBL as *unlabelled molecular structure*
-data.  Before a cold-start experiment, it recreates the PxDDI split and removes
+data.  Before a cold-start experiment, it recreates the AuditDDI split and removes
 every molecule outside the transductive-training partition from the pretraining
 corpus.  Consequently, no validation, S1-dev, S1-test, or S2-test molecule is
 seen even without labels during pretraining.
@@ -38,7 +38,7 @@ def canonicalize_smiles(value: object) -> str | None:
 
 
 def classify_smiles_for_graph(value: object) -> tuple[str | None, str | None]:
-    """Canonicalise once and give any PxDDI graph-exclusion reason."""
+    """Canonicalise once and give any AuditDDI graph-exclusion reason."""
     if not isinstance(value, str) or not value.strip():
         return None, 'missing_or_non_string_smiles'
     with rdBase.BlockLogs():
@@ -68,7 +68,7 @@ def build_pretraining_exclusion_set(
     split_seed: int,
     negative_sampling_strategy: str = 'degree_matched',
 ) -> tuple[set[str], dict[str, Any]]:
-    """Recreate PxDDI's standard split and return all non-train structures.
+    """Recreate AuditDDI's standard split and return all non-train structures.
 
     This is stricter than excluding only S1/S2 test molecules: it also excludes
     transductive validation/test and S1/S2 development molecules.  The model
@@ -129,11 +129,11 @@ def build_pretraining_exclusion_set(
         # otherwise compatible encoder appear incompatible with fine-tuning.
         'negative_sampling_protocol': 'split_aware_standard_v1',
         'negative_sampling_audit_protocol': negative_sampling_audit['protocol'],
-        'raw_unique_positive_pairs': int(len(positives)),
-        'graph_compatible_positive_pairs': int(len(clean_positives)),
-        'sampled_positive_pairs': int(len(sampled)),
-        'split_rows': {name: int(len(frame)) for name, frame in splits.items()},
-        'excluded_non_train_unique_structures': int(len(excluded_smiles)),
+        'raw_unique_positive_pairs': len(positives),
+        'graph_compatible_positive_pairs': len(clean_positives),
+        'sampled_positive_pairs': len(sampled),
+        'split_rows': {name: len(frame) for name, frame in splits.items()},
+        'excluded_non_train_unique_structures': len(excluded_smiles),
         'excluded_non_train_smiles_sha256': stable_smiles_set_hash(excluded_smiles),
     }
     return excluded_smiles, summary
@@ -209,7 +209,7 @@ def select_chembl_pretraining_corpus(
         'graph_compatible_rows': graph_compatible_rows,
         'invalid_or_unsupported_rows': invalid_or_unsupported_rows,
         'rows_excluded_for_twosides_non_train_leakage': excluded_rows,
-        'selected_unique_molecules': int(len(corpus)),
+        'selected_unique_molecules': len(corpus),
         'selected_smiles_sha256': stable_smiles_set_hash(set(corpus['canonical_smiles'])),
     }
     return corpus, summary

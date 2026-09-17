@@ -37,6 +37,7 @@ def test_health_reports_checkpoint_and_runtime_limits():
     assert payload['max_molecule_atoms'] == main.MAX_MOLECULE_ATOMS
     assert payload['toxicity_bridge_error'] is None
     assert payload['toxicity_bridge_size'] == len(main.KNOWN_TOXICITY_SMILES)
+    assert main.TOXICITY_BRIDGE_SUMMARY is not None
     assert payload['toxicity_bridge_conflicting_structures_excluded'] == (
         main.TOXICITY_BRIDGE_SUMMARY['excluded_conflicting_structures']
     )
@@ -298,7 +299,7 @@ def test_chunked_oversized_request_is_rejected_without_reaching_application(monk
 
     asyncio.run(main.MaxRequestBodyMiddleware(downstream)(scope, receive, send))
 
-    assert reached_application is False
+    assert not reached_application
     assert output_messages[0]['type'] == 'http.response.start'
     assert output_messages[0]['status'] == 413
 
@@ -472,8 +473,8 @@ def test_backend_builds_motif_features_for_a_motif_candidate(monkeypatch):
     )
     risk, _, _ = candidate(graph_a, graph_b)
 
-    assert graph_a.motif_features.shape == (1, MOTIF_FEATURE_DIM)
-    assert graph_b.motif_features.shape == (1, MOTIF_FEATURE_DIM)
+    assert getattr(graph_a, 'motif_features').shape == (1, MOTIF_FEATURE_DIM)
+    assert getattr(graph_b, 'motif_features').shape == (1, MOTIF_FEATURE_DIM)
     assert risk.shape == (1,)
 
 

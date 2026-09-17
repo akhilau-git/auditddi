@@ -1,4 +1,4 @@
-"""Lightweight molecular applicability-domain flags for PxDDI evaluation."""
+"""Lightweight molecular applicability-domain flags for AuditDDI evaluation."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class MorganApplicabilityDomain:
 
     @staticmethod
     def _canonicalize(smiles: str) -> str:
-        molecule = Chem.MolFromSmiles(str(smiles).strip())
+        molecule = Chem.MolFromSmiles(smiles.strip())
         if molecule is None:
             raise ValueError(f'Cannot make an applicability-domain fingerprint from {smiles!r}.')
         return Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=True)

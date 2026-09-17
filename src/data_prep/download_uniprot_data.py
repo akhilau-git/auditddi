@@ -2,7 +2,7 @@
 
 Pulls authoritative, real-time protein target sequences and metadata directly from
 the UniProt REST API (https://rest.uniprot.org) into Google Drive:
-    /content/drive/MyDrive/pxddi-data/uniprot/
+    /content/drive/MyDrive/auditddi-data/UniProt/
 
 Features:
 1. Real-Time Only: Fetches verified Swiss-Prot/UniProtKB FASTA records directly from live servers.
@@ -59,7 +59,7 @@ def fetch_realtime_uniprot_entry(
     log_not_found: bool = True,
 ) -> dict[str, Any]:
     """Fetch complete real-time record from UniProt REST API without mock or dummy data."""
-    clean_acc = str(accession).strip().upper()
+    clean_acc = accession.strip().upper()
 
     # Query UniProt REST API for FASTA
     fasta_url = f"https://rest.uniprot.org/uniprotkb/{clean_acc}.fasta"
@@ -152,7 +152,7 @@ def resolve_uniprot_identifier(identifier: str, timeout: float = 15.0) -> dict[s
     some of which look like six-character UniProt accessions. We first try
     canonical mapping, then candidate as accession, then UniProt's exact-gene search.
     """
-    candidate = str(identifier).strip().upper()
+    candidate = identifier.strip().upper()
     if not candidate or len(candidate) < 2:
         return {}
 
@@ -310,12 +310,12 @@ def extract_target_accessions_from_workspace(
         except Exception as exc:
             LOGGER.warning(f"Could not parse extra targets from master nodes: {exc}")
 
-    # 3. Extract from ChEMBL-UniProt mapping if present in pxddi-data
+    # 3. Extract from ChEMBL-UniProt mapping if present in auditddi-data
     if chembl_uniprot_path is not None and Path(chembl_uniprot_path).is_file():
         try:
             df_ch = pd.read_csv(chembl_uniprot_path, sep="\t", header=None, low_memory=False)
-            for val in df_ch.iloc[:, 0].dropna().astype(str):
-                clean_acc = val.strip().upper()
+            for val in df_ch.iloc[:, 0].dropna():
+                clean_acc = str(val).strip().upper()
                 if re.match(r"^[A-Z0-9]{6,10}$", clean_acc):
                     targets.add(clean_acc)
         except Exception as exc:
@@ -326,13 +326,20 @@ def extract_target_accessions_from_workspace(
 
 
 def pull_realtime_uniprot_dataset(
-    output_dir: str | Path = "/content/drive/MyDrive/pxddi-data/uniprot",
+    output_dir: str | Path | None = None,
     master_nodes_path: str | Path | None = None,
     target_subset: list[str] | None = None,
     rate_limit_delay: float = 0.15,
 ) -> dict[str, Any]:
-    """Pull authoritative real-time UniProt dataset into Google Drive pxddi-data/uniprot folder."""
-    out_dir = Path(output_dir)
+    """Pull authoritative real-time UniProt dataset into Google Drive auditddi-data/UniProt folder."""
+    if output_dir is None:
+        try:
+            from src.data_prep.path_resolver import resolve_data_base
+            out_dir = resolve_data_base() / "UniProt"
+        except Exception:
+            out_dir = Path("/content/drive/MyDrive/auditddi-data/UniProt")
+    else:
+        out_dir = Path(output_dir)
     fastas_dir = out_dir / "fastas"
     fastas_dir.mkdir(parents=True, exist_ok=True)
 
@@ -343,7 +350,7 @@ def pull_realtime_uniprot_dataset(
 
     # 1. Resolve target set
     if target_subset is not None:
-        targets = set(str(t).strip().upper() for t in target_subset if t)
+        targets = set(t.strip().upper() for t in target_subset if t)
     else:
         targets = extract_target_accessions_from_workspace(master_nodes_path=master_nodes_path)
 
@@ -379,8 +386,20 @@ def pull_realtime_uniprot_dataset(
                 if gene_match:
                     cached_gene = gene_match.group(1).upper()
 
-                # Guard against corrupted cache from old synonym collision (e.g. CES1 pointing to MT2A)
-                if cached_gene and acc not in CANONICAL_TARGET_TO_UNIPROT and cached_gene != acc:
+                # Guard against old synonym collisions (for example, CES1
+                # pointing to MT2A). A direct UniProt accession such as
+                # P08684 must remain valid when its FASTA header contains
+                # the corresponding gene name, CYP3A4.
+                is_direct_accession = bool(re.fullmatch(
+                    r"(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9])",
+                    acc,
+                ))
+                if (
+                    cached_gene
+                    and not is_direct_accession
+                    and acc not in CANONICAL_TARGET_TO_UNIPROT
+                    and cached_gene != acc
+                ):
                     raise ValueError(f"Cache mismatch for {acc}: found {cached_gene}")
 
                 catalog[acc] = seq
@@ -394,7 +413,7 @@ def pull_realtime_uniprot_dataset(
                     "sequence_length": len(seq),
                     "sha256": hashlib.sha256(seq.encode("utf-8")).hexdigest(),
                     "source": "UniProtKB-Cached",
-                    "file_path": str(fasta_file.name),
+                    "file_path": fasta_file.name,
                 })
                 skipped_count += 1
                 if idx % 10 == 0 or idx == total_targets:
@@ -428,7 +447,7 @@ def pull_realtime_uniprot_dataset(
                     "sequence_length": entry["sequence_length"],
                     "sha256": entry["sha256"],
                     "source": entry["source"],
-                    "file_path": str(resolved_fasta_file.name),
+                    "file_path": resolved_fasta_file.name,
                 })
                 success_count += 1
                 print(f"[{idx}/{total_targets}] Successfully fetched {acc} ({entry['gene_symbol']}) - {len(seq)} AAs")
@@ -455,7 +474,13 @@ def pull_realtime_uniprot_dataset(
     print(f"Wrote JSON sequence lookup: {json_path} ({len(catalog)} sequences)")
 
     # 5. Export Metadata Catalog Table
-    df_meta = pd.DataFrame(metadata_rows)
+    metadata_columns = [
+        "uniprot_id", "gene_symbol", "protein_name", "organism",
+        "sequence_length", "sha256", "source", "file_path",
+    ]
+    # Keep the CSV readable when all live lookups fail, such as an offline
+    # Colab reconnect or a local development run without internet access.
+    df_meta = pd.DataFrame(metadata_rows, columns=metadata_columns)
     # Deduplicate strictly on uniprot_id
     df_meta = df_meta.drop_duplicates(subset=["uniprot_id"]).reset_index(drop=True)
     meta_csv_path = out_dir / "uniprot_targets_metadata.csv"
@@ -493,8 +518,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="/content/drive/MyDrive/pxddi-data/uniprot",
-        help="Target folder in Google Drive (default: /content/drive/MyDrive/pxddi-data/uniprot)",
+        default="/content/drive/MyDrive/auditddi-data/UniProt",
+        help="Target folder in Google Drive (default: /content/drive/MyDrive/auditddi-data/UniProt)",
     )
     parser.add_argument(
         "--master-nodes",

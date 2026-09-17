@@ -1,4 +1,4 @@
-"""Regression tests for the order-independent PxDDI pair architecture."""
+"""Regression tests for the order-independent AuditDDI pair architecture."""
 
 from pathlib import Path
 import sys
@@ -14,10 +14,10 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from data_prep.prepare_twosides import smiles_to_graph
-from models.ddi_model import PxDDIModel
+from models.ddi_model import AuditDDIModel, AuditDDIModel
 
 
-CHECKPOINT_PATH = PROJECT_ROOT / 'backend' / 'checkpoints' / 'pxddi_model.pt'
+CHECKPOINT_PATH = PROJECT_ROOT / 'backend' / 'checkpoints' / 'auditddi_model.pt'
 TEST_PAIRS = [
     (
         'CC(=O)OC1=CC=CC=C1C(=O)O',
@@ -33,7 +33,7 @@ TEST_PAIRS = [
 @pytest.fixture(scope='module')
 def model():
     checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=True)
-    loaded_model = PxDDIModel(
+    loaded_model = AuditDDIModel(
         in_channels=checkpoint['in_channels'],
         hidden_channels=checkpoint['hidden_channels'],
         use_chemberta=checkpoint.get('use_chemberta', False),

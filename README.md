@@ -10,7 +10,7 @@ It is a research framework and **not for unverified clinical use**.
 
 ## Committed reference GNN artifact
 
-The checkpoint at `backend/checkpoints/pxddi_model.pt` currently reports:
+The checkpoint at `backend/checkpoints/auditddi_model.pt` currently reports:
 
 - Best validation epoch: 195
 - Stored validation AUROC: 0.8972
@@ -72,15 +72,15 @@ Useful endpoints:
 - `POST /explain` — slower embedding-level explanation.
 
 The default frontend origin is `http://localhost:3000`. Set
-`PXDDI_ALLOWED_ORIGINS` to a comma-separated allowlist for another deployment.
-`PXDDI_TRUSTED_HOSTS` must similarly contain the bare API host names (for
+`AUDITDDI_ALLOWED_ORIGINS` to a comma-separated allowlist for another deployment.
+`AUDITDDI_TRUSTED_HOSTS` must similarly contain the bare API host names (for
 example, `api.example.org`), never a URL or wildcard. `/health` now labels a
 checkpoint's stored AUROC as internal model-selection metadata rather than test
 or clinical evidence. `/predict` explicitly reports when its checkpoint lacks
 saved calibration, conformal-uncertainty, or structural-domain state.
 
 Interactive API documentation remains enabled for direct local development. In
-Docker Compose it is disabled by default; set `PXDDI_ENABLE_DOCS=true` only for
+Docker Compose it is disabled by default; set `AUDITDDI_ENABLE_DOCS=true` only for
 a trusted development environment. `X-Request-ID` is accepted and returned so
 the frontend can correlate a request with the backend's non-sensitive runtime
 log entry.
@@ -90,14 +90,14 @@ fields: it has no patient-linked training data and must not silently ignore
 such inputs. It accepts at most 16 KiB of request body by default, returns a
 non-sensitive validation response, adds `X-Request-ID` to responses, and
 prevents browsers or intermediaries from caching prediction output. Set
-`PXDDI_MAX_REQUEST_BYTES` or `PXDDI_MAX_CONCURRENT_PREDICTIONS` only after
+`AUDITDDI_MAX_REQUEST_BYTES` or `AUDITDDI_MAX_CONCURRENT_PREDICTIONS` only after
 measuring the intended runtime; these local per-process guards do not replace
 gateway limits.
 
-For a non-local deployment, set `PXDDI_DEPLOYMENT_MODE=production`. Startup
+For a non-local deployment, set `AUDITDDI_DEPLOYMENT_MODE=production`. Startup
 then requires HTTPS origins, public trusted hosts, disabled API documentation,
-a 32+-character `PXDDI_API_KEY`, and a positive
-`PXDDI_RATE_LIMIT_PER_MINUTE`. `POST /predict` and `POST /explain` require the
+a 32+-character `AUDITDDI_API_KEY`, and a positive
+`AUDITDDI_RATE_LIMIT_PER_MINUTE`. `POST /predict` and `POST /explain` require the
 key in `X-API-Key`; keep it in a trusted gateway or service, never browser
 JavaScript. The built-in limit is per process only. TLS termination,
 centralized authentication, shared rate limiting, durable audit logs, and
@@ -124,7 +124,7 @@ the `data-api-base-url` value on the frontend `<body>` to that proxy's API
 prefix or full HTTPS API origin; do not hard-code a workstation hostname in
 browser code.
 
-Generated Colab outputs under `backend/plots/`, `backend/pxddi-results/`, and
+Generated Colab outputs under `backend/plots/`, `backend/auditddi-results/`, and
 `backend/latest_results/` are excluded from the Docker build context. They are
 research evidence, not service inputs; only the explicitly mounted reviewed
 checkpoint directory is available to a running container.
@@ -133,7 +133,7 @@ checkpoint directory is available to a running container.
 
 Training is intentionally run in Google Colab with a GPU. Install the
 Colab-compatible non-PyTorch packages from `requirements_colab.txt`, set
-`PXDDI_DATA_BASE` to the Drive data directory when needed, and run
+`AUDITDDI_DATA_BASE` to the Drive data directory when needed, and run
 `src/training/train_full_pipeline_v2.py`. ChemBERTa remains disabled.
 
 `requirements_colab.txt` fixes `torch-geometric` at version 2.8.0.post1 for
@@ -144,8 +144,8 @@ the resolved package versions, so the installed environment remains
 auditable.
 
 Google Drive shortcuts may be read-only even when the source data inside them
-is accessible. In that case set `PXDDI_DATA_BASE` to the shared shortcut and
-`PXDDI_RESULTS_BASE` to a writable folder in your own `MyDrive`. Normal GNN
+is accessible. In that case set `AUDITDDI_DATA_BASE` to the shared shortcut and
+`AUDITDDI_RESULTS_BASE` to a writable folder in your own `MyDrive`. Normal GNN
 and ECFP baseline runs will then read the TWOSIDES CSV and toxicity bridge from
 the shortcut while storing artifacts, latest results, and new candidate
 checkpoints under the writable results folder. The run manifest records both
@@ -178,11 +178,11 @@ pipeline defaults; setting them explicitly in Colab makes the run log easier
 to review:
 
 ```bash
-export PXDDI_MODEL_ARCHITECTURE=edge_aware_gat_v2
-export PXDDI_NEGATIVE_SAMPLING_PROTOCOL=split_aware_standard_v1
-export PXDDI_NEGATIVE_SAMPLING_STRATEGY=degree_matched
-export PXDDI_USE_TOXICITY_PAIR_FEATURES=false
-export PXDDI_TOXICITY_LOSS_WEIGHT=0.0
+export AUDITDDI_MODEL_ARCHITECTURE=edge_aware_gat_v2
+export AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL=split_aware_standard_v1
+export AUDITDDI_NEGATIVE_SAMPLING_STRATEGY=degree_matched
+export AUDITDDI_USE_TOXICITY_PAIR_FEATURES=false
+export AUDITDDI_TOXICITY_LOSS_WEIGHT=0.0
 python src/training/train_full_pipeline_v2.py
 ```
 
@@ -191,7 +191,7 @@ comparison. Its training-row memory features now exclude the queried pair's
 own interaction-matrix entry, preventing the previously observed label leak.
 Every completed run writes `evaluation_metrics.csv` before its latest-results
 mirror is published. To re-evaluate a checkpoint, set one explicit
-`PXDDI_CHECKPOINT_PATH` and use `src/training/evaluate_saved_checkpoint.py`;
+`AUDITDDI_CHECKPOINT_PATH` and use `src/training/evaluate_saved_checkpoint.py`;
 it rejects checkpoints whose architecture, input hash, split evidence, or
 real training-history artifact cannot be verified. Checkpoint-only evaluation
 is read-only: it writes a new report folder but never changes the selected
@@ -243,7 +243,7 @@ does **not** make an unreported pair safe, and historical pre-split-sampling
 artifacts must not be compared or combined with these runs.
 
 For a chemical-framework holdout, run a separate candidate training job with
-`PXDDI_EVALUATION_PROTOCOL=scaffold_disjoint`. It creates Murcko
+`AUDITDDI_EVALUATION_PROTOCOL=scaffold_disjoint`. It creates Murcko
 scaffold-disjoint train/validation/test partitions, excludes pairs spanning two
 different scaffold roles, and trains a distinct candidate checkpoint. It must
 not be mixed with the standard Transductive/S1/S2 result, because doing so
@@ -263,15 +263,15 @@ folders remain as reproducibility evidence and are not deleted automatically.
 
 ### Candidate-model evaluation
 
-The deployed `backend/checkpoints/pxddi_model.pt` remains the audited legacy
+The deployed `backend/checkpoints/auditddi_model.pt` remains the audited legacy
 GAT checkpoint. New training defaults to an **edge-aware candidate** checkpoint
-at `checkpoints/candidates/pxddi_edge_aware_candidate.pt`; it does not replace
+at `checkpoints/candidates/auditddi_edge_aware_candidate.pt`; it does not replace
 the deployed model automatically. The candidate uses richer atom features and
 bond order, stereo, chirality, conjugation, aromaticity, and ring features.
 
 An additional untrained research candidate,
 `motif_edge_aware_gat_v1`, can be selected with
-`PXDDI_MODEL_ARCHITECTURE=motif_edge_aware_gat_v1`. It fuses the edge-aware
+`AUDITDDI_MODEL_ARCHITECTURE=motif_edge_aware_gat_v1`. It fuses the edge-aware
 graph embedding with 17 fixed SMARTS motif-count features, including carbonyl,
 amide, ester, aromatic-ring, amine, halogen, and other common chemical motifs.
 The motif vocabulary is explicit in `src/data_prep/molecular_motifs.py` and is
@@ -280,7 +280,7 @@ not proven DDI mechanisms or validated explanations.
 
 Another separate untrained candidate,
 `cross_attention_edge_aware_gat_v1`, can be selected with
-`PXDDI_MODEL_ARCHITECTURE=cross_attention_edge_aware_gat_v1`. After the
+`AUDITDDI_MODEL_ARCHITECTURE=cross_attention_edge_aware_gat_v1`. After the
 edge-aware encoder produces atom embeddings, each atom in Drug A attends only
 to atoms in its paired Drug B, and vice versa. Attention is isolated within
 each DDI row—no molecule can attend to a different pair in the batch. Its
@@ -291,7 +291,7 @@ mechanism or validated explanations.
 ### Candidate explanation audit (optional)
 
 For a **trained candidate only**, set
-`PXDDI_RUN_CANDIDATE_EXPLANATIONS=1` when launching
+`AUDITDDI_RUN_CANDIDATE_EXPLANATIONS=1` when launching
 `src/training/train_full_pipeline_v2.py`. The run then writes a small,
 deterministically selected evaluation subset to
 `artifacts/run_<timestamp>/explanations/candidate_occlusion_explanations.json`.
@@ -315,7 +315,7 @@ To evaluate repeated-seed explanation stability rather than selecting a
 visually preferred run, create matching candidate explanation artifacts for at
 least two seeds, then run
 `src/training/analyze_explanation_stability.py` with
-`PXDDI_EXPLANATION_ARTIFACTS` set to their comma-separated JSON paths. The
+`AUDITDDI_EXPLANATION_ARTIFACTS` set to their comma-separated JSON paths. The
 report measures overlap of top atoms, motifs, and cross-drug motif associations
 only for pairs explained by every supplied run, together with raw-score
 variation. It reports agreement; it does not prove a causal explanation.
@@ -325,7 +325,7 @@ variation. It reports agreement; it does not prove a causal explanation.
 Every new run reserves post-hoc validation rows before training, then partitions
 those reserved predictions by class into three disjoint roles:
 Platt-calibration fitting, decision-threshold selection, and binary
-split-conformal fitting (default `PXDDI_CONFORMAL_ALPHA=0.1`). The exact roles,
+split-conformal fitting (default `AUDITDDI_CONFORMAL_ALPHA=0.1`). The exact roles,
 scores, and hashes are stored in the run artifact. Each saved test prediction
 states whether its conformal set is a single label, both labels, or an empty
 set; both-label and empty sets are marked `conformal_abstain=true`. The
@@ -345,7 +345,7 @@ ensemble. It trains **three to five** same-architecture members with different
 model seeds but one fixed data/split seed, verifies their data and row-level
 prediction provenance, averages their raw scores, and then fits a fresh
 ensemble calibration, threshold, and conformal rule on disjoint validation
-roles. It never overwrites or serves `backend/checkpoints/pxddi_model.pt`.
+roles. It never overwrites or serves `backend/checkpoints/auditddi_model.pt`.
 
 The ensemble prediction CSV stores every member score, its standard deviation,
 conformal set, structural-domain flag, and a transparent abstention status. A
@@ -354,15 +354,15 @@ when the conformal set is ambiguous/empty, members disagree beyond the chosen
 research threshold, or either drug is outside the nearest-training-drug
 structural domain. This is a review/abstention rule—not a clinical guarantee.
 
-For a later Colab run, point `PXDDI_DATA_BASE` at the shared input-data folder
-and `PXDDI_RESULTS_BASE` / `PXDDI_ENSEMBLES_BASE` at writable folders in your
+For a later Colab run, point `AUDITDDI_DATA_BASE` at the shared input-data folder
+and `AUDITDDI_RESULTS_BASE` / `AUDITDDI_ENSEMBLES_BASE` at writable folders in your
 own Drive, then run for example:
 
 ```bash
-PXDDI_ENSEMBLE_ARCHITECTURE=cross_attention_edge_aware_gat_v1 \
-PXDDI_ENSEMBLE_SEEDS=11,23,37 \
-PXDDI_ENSEMBLE_SPLIT_SEED=42 \
-PXDDI_ENSEMBLE_EPOCHS=200 \
+AUDITDDI_ENSEMBLE_ARCHITECTURE=cross_attention_edge_aware_gat_v1 \
+AUDITDDI_ENSEMBLE_SEEDS=11,23,37 \
+AUDITDDI_ENSEMBLE_SPLIT_SEED=42 \
+AUDITDDI_ENSEMBLE_EPOCHS=200 \
 python src/training/run_fixed_split_ensemble.py
 ```
 
@@ -372,11 +372,11 @@ valid fixed-split ensemble members.
 
 Candidate training applies validation-AUROC early stopping after at least 40
 epochs, with a default patience of 30 non-improving epochs. Set
-`PXDDI_EARLY_STOPPING_PATIENCE=0` only when a deliberate fixed-length run is
+`AUDITDDI_EARLY_STOPPING_PATIENCE=0` only when a deliberate fixed-length run is
 needed; the final manifest always records whether early stopping occurred.
 
 The backend continues to load the legacy checkpoint unless an operator
-explicitly selects a reviewed file through `PXDDI_CHECKPOINT_PATH`. A selected
+explicitly selects a reviewed file through `AUDITDDI_CHECKPOINT_PATH`. A selected
 edge-aware candidate is given the compatible rich graph schema automatically;
 this is a loading compatibility feature, not an approval to deploy the
 candidate.
@@ -386,11 +386,13 @@ artifacts, then decide whether it should replace the legacy model. For a
 controlled baseline/ablation study, run
 `src/training/run_experiment_suite.py`. Its screening preset compares the
 ECFP/Morgan + linear-logistic baseline with four GNN ablations once. Its paper
-preset repeats the directly comparable legacy and edge-aware multi-task GNNs
-across five seeds. The suite verifies that each matched seed used the same
+preset repeats the ECFP baseline and directly comparable legacy and edge-aware
+DDI-only GNNs across five seeds. Toxicity is evaluated separately as an
+ablation because the clean toxicity bridge has limited coverage. The suite
+verifies that each matched seed used the same
 TWOSIDES input and exact split hashes, and saves paired bootstrap confidence
 intervals. The ECFP baseline can be included in any deliberate run through
-`PXDDI_EXPERIMENT_NAMES=ecfp_sgd_logistic,...`. It uses symmetric
+`AUDITDDI_EXPERIMENT_NAMES=ecfp_sgd_logistic,...`. It uses symmetric
 `ECFP_a+ECFP_b` and `|ECFP_a-ECFP_b|` features, so reversing the drug order
 does not change its score. A screening result is directional evidence only; it
 is not statistical proof. Neither mode promotes a model automatically.
@@ -405,11 +407,11 @@ It also exposes `cross_attention_edge_aware_ddi_only` and
 it improves repeated matched-seed S1/S2 results over the same edge-aware GATv2
 reference, without an unacceptable calibration or efficiency regression.
 
-If `PXDDI_DATA_BASE` is a read-only Google Drive shortcut, keep it pointed at
-the shared data and set `PXDDI_EXPERIMENTS_BASE` to a writable folder in your
+If `AUDITDDI_DATA_BASE` is a read-only Google Drive shortcut, keep it pointed at
+the shared data and set `AUDITDDI_EXPERIMENTS_BASE` to a writable folder in your
 own Drive before running the experiment suite. The suite then reads source data
 from the shortcut but writes study artifacts and candidate checkpoints to the
-writable location. `PXDDI_EXPERIMENTS_BASE` controls the complete study folder;
+writable location. `AUDITDDI_EXPERIMENTS_BASE` controls the complete study folder;
 its child runs already receive their individual writable artifact and checkpoint
 paths automatically.
 
@@ -427,13 +429,13 @@ still require human scientific review.
 When an independent dataset is ready, its CSV must contain `source`, `target`,
 and binary `label` columns and its metadata must complete
 `examples/external_evaluation_metadata.example.json`. Set
-`PXDDI_EXTERNAL_EDGES`, `PXDDI_EXTERNAL_METADATA`,
-`PXDDI_EXTERNAL_CHECKPOINT_PATH`, and (optionally)
-`PXDDI_EXTERNAL_ARTIFACTS_DIR`, then run
+`AUDITDDI_EXTERNAL_EDGES`, `AUDITDDI_EXTERNAL_METADATA`,
+`AUDITDDI_EXTERNAL_CHECKPOINT_PATH`, and (optionally)
+`AUDITDDI_EXTERNAL_ARTIFACTS_DIR`, then run
 `python src/training/evaluate_external_dataset.py`. A pre-current-pipeline
 checkpoint or a missing original artifact directory is intentionally rejected.
 
-`notebooks/pxddi_training_run.ipynb` is intentionally empty in this local
+`notebooks/auditddi_training_run.ipynb` is intentionally empty in this local
 repository because the live work is done in Colab. After the next audited run,
 download and commit the executed notebook together with the configuration,
 data/split manifests, logs, metrics, plots, and checkpoint hash.
@@ -454,3 +456,12 @@ data/split manifests, logs, metrics, plots, and checkpoint hash.
   durable audit logging, and monitoring remain hosting responsibilities.
 
 See `MODEL_CARD.md` for full limitations and the current research scope.
+# First local sign-in
+
+The Docker deployment uses real sign-in by default. Before its first start,
+set a long, random `AUDITDDI_AUTH_BOOTSTRAP_TOKEN` in a local `.env` file
+(which must not be committed). Open `/login.html`, use **Create administrator
+account**, and enter that token once. The administrator is then routed to
+`/admin.html` to create and assign role-specific accounts. There is no public
+role signup, because professional workspaces must be assigned by an
+organisation administrator.

@@ -18,8 +18,14 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon
+from scipy.stats import wilcoxon  # type: ignore[import-untyped]
 
+
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base,
+    get_auditddi_env,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GNN_TRAINING_SCRIPT = PROJECT_ROOT / 'src' / 'training' / 'train_full_pipeline_v2.py'
@@ -28,24 +34,31 @@ RUNNER_SCRIPTS = {
     'gnn': GNN_TRAINING_SCRIPT,
     'ecfp_sgd_logistic': ECFP_BASELINE_SCRIPT,
 }
-DRIVE_BASE = Path(os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data'))
-PRESET = os.environ.get('PXDDI_EXPERIMENT_PRESET', 'screening').strip().lower()
-EXPERIMENT_SPLIT_SEED = int(os.environ.get('PXDDI_EXPERIMENT_SPLIT_SEED', '42'))
+# Keep analysis helpers importable in local/CI environments without the raw
+# Drive datasets.  The launcher still fails before it starts an experiment.
+DATA_BASE_RESOLUTION_ERROR: FileNotFoundError | None = None
+try:
+    DRIVE_BASE = resolve_data_base()
+except FileNotFoundError as error:
+    DATA_BASE_RESOLUTION_ERROR = error
+    DRIVE_BASE = Path(get_auditddi_env('DATA_BASE', PROJECT_ROOT / 'data'))
+PRESET = str(get_auditddi_env('EXPERIMENT_PRESET', 'screening')).strip().lower()
+EXPERIMENT_SPLIT_SEED = int(get_auditddi_env('EXPERIMENT_SPLIT_SEED', '42'))
 if EXPERIMENT_SPLIT_SEED <= 0:
-    raise ValueError('PXDDI_EXPERIMENT_SPLIT_SEED must be a positive integer.')
-EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL = os.environ.get(
-    'PXDDI_EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
-).strip().lower()
+    raise ValueError('AUDITDDI_EXPERIMENT_SPLIT_SEED must be a positive integer.')
+EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL = str(get_auditddi_env(
+    'EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
+)).strip().lower()
 if EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL not in {
     'split_aware_standard_v1', 'legacy_pre_split_v1'
 }:
     raise ValueError(
-        'PXDDI_EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL must be '
+        'AUDITDDI_EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL must be '
         'split_aware_standard_v1 or legacy_pre_split_v1.'
     )
-REFERENCE_EXPERIMENT = os.environ.get(
-    'PXDDI_EXPERIMENT_REFERENCE', 'legacy_gat_multitask'
-).strip()
+REFERENCE_EXPERIMENT = str(get_auditddi_env(
+    'EXPERIMENT_REFERENCE', 'legacy_gat_ddi_only'
+)).strip()
 SPLIT_NAMES = (
     'transductive_train',
     'validation',
@@ -170,40 +183,43 @@ def resolve_experiments_base(
     """Select a writable output root separately from the read-only data root.
 
     Shared Google Drive folders are often mounted through a read-only shortcut.
-    PxDDI can still read its source CSVs there, while ``PXDDI_EXPERIMENTS_BASE``
+    AuditDDI can still read its source CSVs there, while ``AUDITDDI_EXPERIMENTS_BASE``
     directs every study artifact and candidate checkpoint to the user's own
     writable Drive location.
     """
     if configured_path is None:
-        configured_path = os.environ.get('PXDDI_EXPERIMENTS_BASE')
-    return Path(configured_path) if configured_path else data_base / 'experiments'
+        configured_path = get_auditddi_env('EXPERIMENTS_BASE')
+    if configured_path:
+        return Path(configured_path)
+    return resolve_results_base() / 'experiments'
 
 
 def experiment_settings() -> tuple[list[int], int]:
     """Choose a quick screening study or a repeated-seed paper study."""
     if PRESET == 'screening':
-        return _parse_seeds(os.environ.get('PXDDI_EXPERIMENT_SEEDS', '42')), int(
-            os.environ.get('PXDDI_EXPERIMENT_EPOCHS', '120')
+        return _parse_seeds(get_auditddi_env('EXPERIMENT_SEEDS', '42')), int(
+            get_auditddi_env('EXPERIMENT_EPOCHS', '120')
         )
     if PRESET == 'paper':
-        return _parse_seeds(os.environ.get('PXDDI_EXPERIMENT_SEEDS', '11,23,37,53,71')), int(
-            os.environ.get('PXDDI_EXPERIMENT_EPOCHS', '200')
+        return _parse_seeds(get_auditddi_env('EXPERIMENT_SEEDS', '11,23,37,53,71')), int(
+            get_auditddi_env('EXPERIMENT_EPOCHS', '200')
         )
-    raise ValueError("PXDDI_EXPERIMENT_PRESET must be 'screening' or 'paper'.")
+    raise ValueError("AUDITDDI_EXPERIMENT_PRESET must be 'screening' or 'paper'.")
 
 
 def selected_experiments(requested_names: str | None = None) -> tuple[dict[str, Any], ...]:
     """Choose an explicit set of configurations for a fair, bounded study.
 
-    Screening runs every ablation once.  The paper preset repeats the two
-    directly comparable multi-task models by default, avoiding an unnecessarily
-    expensive 20-run Colab job after the ablation question has been answered.
-    ``PXDDI_EXPERIMENT_NAMES`` can always request a deliberate alternative.
+    Screening runs every ablation once.  The paper preset repeats a classical
+    ECFP baseline and directly comparable legacy and edge-aware DDI-only GNNs.
+    Toxicity is a separately labelled ablation because clean labels cover only
+    a subset of the structures.  ``AUDITDDI_EXPERIMENT_NAMES`` can always
+    request a deliberate alternative.
     """
     by_name = {experiment['name']: experiment for experiment in EXPERIMENTS}
     value = requested_names
     if value is None:
-        value = os.environ.get('PXDDI_EXPERIMENT_NAMES')
+        value = get_auditddi_env('EXPERIMENT_NAMES')
     if value is None or not value.strip():
         names = (
             tuple(
@@ -211,14 +227,18 @@ def selected_experiments(requested_names: str | None = None) -> tuple[dict[str, 
                 if not experiment.get('requires_chembl_pretrained_encoder', False)
             )
             if PRESET == 'screening'
-            else ('legacy_gat_multitask', 'edge_aware_multitask')
+            else (
+                'ecfp_sgd_logistic',
+                'legacy_gat_ddi_only',
+                'edge_aware_ddi_only',
+            )
         )
     else:
         names = tuple(name.strip() for name in value.split(',') if name.strip())
     unknown = [name for name in names if name not in by_name]
     if unknown:
         raise ValueError(
-            f'PXDDI_EXPERIMENT_NAMES contains unknown experiments: {unknown}. '
+            f'AUDITDDI_EXPERIMENT_NAMES contains unknown experiments: {unknown}. '
             f'Available: {sorted(by_name)}.'
         )
     if not names:
@@ -527,6 +547,8 @@ def save_comparison_plot(table: pd.DataFrame, destination: Path) -> None:
 
 
 def main() -> None:
+    if DATA_BASE_RESOLUTION_ERROR is not None:
+        raise DATA_BASE_RESOLUTION_ERROR
     seeds, epochs = experiment_settings()
     experiments = selected_experiments()
     experiment_names = {experiment['name'] for experiment in experiments}
@@ -578,33 +600,39 @@ def main() -> None:
             checkpoint_suffix = '.npz' if experiment['runner'] == 'ecfp_sgd_logistic' else '.pt'
             checkpoint_path = run_root / 'checkpoints' / f"{experiment['name']}_seed_{seed}{checkpoint_suffix}"
             environment = os.environ.copy()
-            environment.update({
-                'PXDDI_SEED': str(seed),
-                'PXDDI_MODEL_SEED': str(seed),
-                'PXDDI_SPLIT_SEED': str(EXPERIMENT_SPLIT_SEED),
-                'PXDDI_ARTIFACTS_BASE': str(artifact_base),
-                'PXDDI_CHECKPOINT_PATH': str(checkpoint_path),
-                'PXDDI_PUBLISH_LATEST_RESULTS': 'false',
-                'PXDDI_NEGATIVE_SAMPLING_STRATEGY': experiment.get('negative_sampling_strategy', 'degree_matched'),
-                'PXDDI_NEGATIVE_SAMPLING_PROTOCOL': EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL,
-            })
+            for key_suffix, val in [
+                ('SEED', str(seed)),
+                ('MODEL_SEED', str(seed)),
+                ('SPLIT_SEED', str(EXPERIMENT_SPLIT_SEED)),
+                ('ARTIFACTS_BASE', str(artifact_base)),
+                ('CHECKPOINT_PATH', str(checkpoint_path)),
+                ('PUBLISH_LATEST_RESULTS', 'false'),
+                ('NEGATIVE_SAMPLING_STRATEGY', experiment.get('negative_sampling_strategy', 'degree_matched')),
+                ('NEGATIVE_SAMPLING_PROTOCOL', EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL),
+            ]:
+                environment[f'AUDITDDI_{key_suffix}'] = val
+                environment[f'PXDDI_{key_suffix}'] = val
             if experiment['runner'] == 'gnn':
-                environment.update({
-                    'PXDDI_EPOCHS': str(epochs),
-                    'PXDDI_MODEL_ARCHITECTURE': experiment['architecture'],
-                    'PXDDI_USE_TOXICITY_PAIR_FEATURES': str(experiment['use_toxicity_pair_features']).lower(),
-                    'PXDDI_TOXICITY_LOSS_WEIGHT': str(experiment['toxicity_loss_weight']),
-                })
+                for key_suffix, val in [
+                    ('EPOCHS', str(epochs)),
+                    ('MODEL_ARCHITECTURE', experiment['architecture']),
+                    ('USE_TOXICITY_PAIR_FEATURES', str(experiment['use_toxicity_pair_features']).lower()),
+                    ('TOXICITY_LOSS_WEIGHT', str(experiment['toxicity_loss_weight'])),
+                ]:
+                    environment[f'AUDITDDI_{key_suffix}'] = val
+                    environment[f'PXDDI_{key_suffix}'] = val
                 if experiment.get('requires_chembl_pretrained_encoder', False):
-                    pretraining_path = os.environ.get('PXDDI_CHEMBL_PRETRAINED_ENCODER_PATH')
+                    pretraining_path = get_auditddi_env('CHEMBL_PRETRAINED_ENCODER_PATH')
                     if not pretraining_path:
                         raise ValueError(
                             'edge_aware_chembl_pretrained_multitask requires '
-                            'PXDDI_CHEMBL_PRETRAINED_ENCODER_PATH to point to a '
+                            'AUDITDDI_CHEMBL_PRETRAINED_ENCODER_PATH to point to a '
                             'completed audited pretraining checkpoint.'
                         )
+                    environment['AUDITDDI_PRETRAINED_ENCODER_PATH'] = pretraining_path
                     environment['PXDDI_PRETRAINED_ENCODER_PATH'] = pretraining_path
             else:
+                environment['AUDITDDI_ECFP_EPOCHS'] = str(experiment['epochs'])
                 environment['PXDDI_ECFP_EPOCHS'] = str(experiment['epochs'])
             training_script = RUNNER_SCRIPTS[experiment['runner']]
             print(f"Running {experiment['name']} seed={seed}; checkpoint={checkpoint_path}")

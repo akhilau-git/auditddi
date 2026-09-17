@@ -140,7 +140,7 @@ def test_paper_preset_default_experiment_subset_is_explicit(monkeypatch):
     monkeypatch.setattr('src.training.run_experiment_suite.PRESET', 'paper')
 
     assert [item['name'] for item in selected_experiments('')] == [
-        'legacy_gat_multitask', 'edge_aware_multitask'
+        'ecfp_sgd_logistic', 'legacy_gat_ddi_only', 'edge_aware_ddi_only'
     ]
 
 
@@ -186,7 +186,7 @@ def test_screening_default_does_not_silently_require_a_pretraining_checkpoint(mo
 
 
 def test_experiment_outputs_can_be_separated_from_the_read_only_data_root(tmp_path):
-    writable_output_root = tmp_path / 'my_drive' / 'pxddi_results'
+    writable_output_root = tmp_path / 'my_drive' / 'auditddi_results'
 
     resolved = resolve_experiments_base(
         writable_output_root, data_base=tmp_path / 'read_only_shared_data'

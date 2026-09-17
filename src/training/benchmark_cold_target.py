@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon
+from scipy.stats import wilcoxon  # type: ignore[import-untyped]
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -699,7 +699,11 @@ def run_cold_target_study(
         cand_uniprot = [
             Path(master_nodes_path).parent / "uniprot",
             Path(master_nodes_path).parent / "UniProt",
+            Path("/content/drive/MyDrive/auditddi-data/UniProt"),
+            Path("/content/drive/MyDrive/auditddi-data/uniprot"),
             Path("/content/drive/MyDrive/pxddi-data/uniprot"),
+            Path("auditddi-data/UniProt"),
+            Path("auditddi-data/uniprot"),
             Path("data/uniprot"),
         ]
         uniprot_dir = next((d for d in cand_uniprot if d.is_dir()), None)
@@ -1290,9 +1294,10 @@ def run_cold_target_study(
 
         print(f"Extracted {X_train.shape[1]} invariant features for {len(X_train)} training pairs.")
 
-        # Train HistGradientBoosting strictly on the 17 pure domain-invariant physical, chemical & sequence features
-        # (Excluding binary retrieval shortcut columns 17..21 that collapse under S1 full cold-start)
-        feat_dim_invariant = min(17, X_train.shape[1])
+        # Train HistGradientBoosting strictly on the 19 pure domain-invariant physical, chemical & sequence features
+        # (Columns 0..18: 5 CYP collisions, total clash, PPB, hepatic, MW ratio/diff, LogP diff/sum, TPSA overlap/diff, HBD/HBA sums, target sequence similarity, ECFP Cosine & Tanimoto similarities)
+        # (Excluding training-graph retrieval shortcut columns 19..21 that collapse under S1 full cold-start)
+        feat_dim_invariant = min(19, X_train.shape[1])
         X_tr_in = X_train[:, :feat_dim_invariant]
         X_va_in = X_val[:, :feat_dim_invariant]
         X_s1_in = X_s1[:, :feat_dim_invariant]
@@ -1300,7 +1305,7 @@ def run_cold_target_study(
         X_s2_in = X_s2[:, :feat_dim_invariant] if X_s2 is not None else None
         X_ct_in = X_ct[:, :feat_dim_invariant] if X_ct is not None else None
 
-        print(f"Fitting HistGradientBoostingClassifier on {feat_dim_invariant} pure domain-invariant physical, chemical & sequence features...")
+        print(f"Fitting HistGradientBoostingClassifier on {feat_dim_invariant} pure domain-invariant physical, chemical, sequence & Tanimoto features...")
         tree_clf = HistGradientBoostingClassifier(
             max_iter=150,
             learning_rate=0.04,
@@ -1534,6 +1539,8 @@ def run_cold_target_study(
                 s1_labels = df_s1[lbl_c].to_numpy().astype(np.float32).ravel()
             if cold_target_labels is None:
                 cold_target_labels = s1_labels
+            assert s1_labels is not None
+            assert cold_target_labels is not None
 
             # Validation threshold
             p_val_blend = None
@@ -1922,7 +1929,7 @@ This study compares the standard BindingDB target-profile model, a sequence-only
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Cold-Target / Protein Sequence Generalization Benchmark Study")
-    parser.add_argument("--data_dir", type=str, default="data", help="Path to pxddi-data directory or data folder")
+    parser.add_argument("--data_dir", type=str, default="data", help="Path to auditddi-data directory or data folder")
     parser.add_argument("--master_nodes", type=str, default=None, help="Path to master nodes CSV")
     parser.add_argument("--splits_dir", type=str, default=None, help="Path to benchmark splits directory")
     parser.add_argument("--output_dir", type=str, default="benchmark_cold_target_results", help="Output directory")
@@ -1941,27 +1948,61 @@ if __name__ == "__main__":
     parser.add_argument("--use_esm", action="store_true", default=False, help="Use pre-trained ESM-2 embeddings for protein sequences")
     args = parser.parse_args()
 
-    data_p = Path(args.data_dir)
+    # Transparent dataset & results resolution across local and Colab Drive environments
+    try:
+        from src.data_prep.path_resolver import resolve_data_base, resolve_results_base
+        default_data_p = resolve_data_base()
+        default_results_p = resolve_results_base()
+    except Exception:
+        default_data_p = Path(args.data_dir)
+        default_results_p = Path(args.output_dir)
+
+    data_p = Path(args.data_dir) if args.data_dir != "data" else default_data_p
+    results_p = default_results_p
+
+    # 1. Resolve benchmark splits directory
     splits_p = None
     if args.splits_dir:
         splits_p = Path(args.splits_dir)
-    elif (data_p / "splits").is_dir():
-        splits_p = data_p / "splits"
-    elif (data_p / "benchmark_splits").is_dir():
-        splits_p = data_p / "benchmark_splits"
     else:
+        for cand in [
+            results_p / "benchmark_splits",
+            data_p / "benchmark_splits",
+            Path("/content/drive/MyDrive/auditddi-results/benchmark_splits"),
+            data_p / "splits",
+            Path("benchmark_splits"),
+        ]:
+            if cand.is_dir():
+                splits_p = cand
+                break
+    if splits_p is None:
         splits_p = data_p
 
+    # 2. Resolve verified master nodes CSV with biological features
     master_nodes_p = None
     if args.master_nodes:
         master_nodes_p = Path(args.master_nodes)
-    elif (data_p / "unified_graph" / "master_drug_nodes_verified_targets.csv").is_file():
-        master_nodes_p = data_p / "unified_graph" / "master_drug_nodes_verified_targets.csv"
-    elif (data_p / "master_drug_nodes_verified_targets.csv").is_file():
-        master_nodes_p = data_p / "master_drug_nodes_verified_targets.csv"
-    elif (data_p / "master_drug_nodes.csv").is_file():
-        master_nodes_p = data_p / "master_drug_nodes.csv"
     else:
+        for cand in [
+            results_p / "unified_graph" / "master_drug_nodes_verified_targets.csv",
+            Path("/content/drive/MyDrive/auditddi-results/unified_graph/master_drug_nodes_verified_targets.csv"),
+            results_p / "master_drug_nodes_verified_targets.csv",
+            data_p / "unified_graph" / "master_drug_nodes_verified_targets.csv",
+            data_p / "master_drug_nodes_verified_targets.csv",
+            results_p / "unified_graph" / "master_drug_nodes.csv",
+            data_p / "master_drug_nodes.csv",
+        ]:
+            if cand.is_file():
+                master_nodes_p = cand
+                break
+
+    # 3. Resolve output directory
+    output_dir_p = Path(args.output_dir)
+    if args.output_dir == "benchmark_cold_target_results" and results_p != Path("benchmark_cold_target_results"):
+        output_dir_p = results_p / "benchmark_cold_target_results"
+    output_dir_p.mkdir(parents=True, exist_ok=True)
+
+    if master_nodes_p is None:
         # Fallback: create minimal master nodes from splits
         all_drugs = set()
         for s_file in splits_p.glob("*.csv"):
@@ -1973,8 +2014,7 @@ if __name__ == "__main__":
                 all_drugs.update(df_temp[tc].dropna().astype(str).unique())
             except Exception:
                 pass
-        out_nodes = Path(args.output_dir) / "minimal_master_nodes.csv"
-        out_nodes.parent.mkdir(parents=True, exist_ok=True)
+        out_nodes = output_dir_p / "minimal_master_nodes.csv"
         df_new = pd.DataFrame({"drug_id": sorted(all_drugs), "canonical_smiles": sorted(all_drugs)})
         df_new.to_csv(out_nodes, index=False)
         master_nodes_p = out_nodes
@@ -1983,7 +2023,7 @@ if __name__ == "__main__":
     run_cold_target_study(
         master_nodes_path=master_nodes_p,
         splits_dir=splits_p,
-        output_dir=args.output_dir,
+        output_dir=output_dir_p,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,

@@ -9,7 +9,7 @@ from src.training.benchmark_cold_target import (
     paired_bootstrap_comparison,
     evaluate_loader_predictions,
 )
-from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
 from src.data_prep.cached_graph_loader import MolecularCache, build_cached_multimodal_dataloader
 
 
@@ -59,7 +59,7 @@ def test_cold_target_evaluation_handles_protein_sequences(tmp_path):
     in_dim = first_graph.x.size(1) if first_graph.x is not None else 78
     edge_dim = first_graph.edge_attr.size(1) if first_graph.edge_attr is not None else 10
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_dim,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_MULTIMODAL,
@@ -103,7 +103,7 @@ def test_extract_inductive_pair_features_and_hybrid_flow(tmp_path):
     in_dim = first_graph.x.size(1) if first_graph.x is not None else 78
     edge_dim = first_graph.edge_attr.size(1) if first_graph.edge_attr is not None else 10
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_dim,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_MULTIMODAL,

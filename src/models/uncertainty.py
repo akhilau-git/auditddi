@@ -1,4 +1,4 @@
-"""Internal-validation uncertainty summaries for research-only PxDDI runs."""
+"""Internal-validation uncertainty summaries for research-only AuditDDI runs."""
 
 from __future__ import annotations
 
@@ -61,8 +61,8 @@ def fit_split_conformal_binary(
         'method': CONFORMAL_METHOD,
         'fitted_on': fitted_on,
         'alpha': float(alpha),
-        'validation_sample_count': int(len(targets)),
-        'quantile_rank': int(rank),
+        'validation_sample_count': len(targets),
+        'quantile_rank': rank,
         'nonconformity_threshold': threshold,
         'validation_nonconformity_scores': nonconformity.tolist(),
         'interpretation_warning': (
@@ -139,7 +139,7 @@ def summarize_conformal_test_labels(
         for label, prediction_set in zip(targets, sets)
     ], dtype=bool)
     return {
-        'sample_count': int(len(targets)),
+        'sample_count': len(targets),
         'observed_coverage': float(covered.mean()),
         'abstention_rate': float(np.asarray(prediction_sets['abstain'], dtype=bool).mean()),
     }
@@ -190,7 +190,7 @@ def predict_mc_dropout(
         'epistemic_variance': var_p,
         'epistemic_std': std_p,
         'credible_interval_95': (ci_lower, ci_upper),
-        'high_uncertainty_flag': bool(std_p >= uncertainty_threshold),
+        'high_uncertainty_flag': std_p >= uncertainty_threshold,
         'sample_predictions': [float(p) for p in preds],
     }
 

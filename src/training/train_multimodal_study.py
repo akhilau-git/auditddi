@@ -70,6 +70,7 @@ from src.models.ddi_model import (
     MODEL_ARCHITECTURE_ABLATION_GENES,
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MULTIMODAL,
+    AuditDDIModel,
     PxDDIModel,
     model_from_checkpoint,
 )
@@ -81,7 +82,7 @@ from src.training.benchmark_cold_start import (
 
 
 def predict_loader(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     loader: Any,
     device: torch.device,
     is_multimodal: bool = True,
@@ -214,7 +215,7 @@ def train_extended_multimodal(
     patience: int = 8,
     hidden_dim: int = 64,
     **kwargs: Any,
-) -> tuple[PxDDIModel, pd.DataFrame, dict[str, Any]]:
+) -> tuple[AuditDDIModel, pd.DataFrame, dict[str, Any]]:
     """Train the multimodal model across extended epochs with checkpointing."""
     if select_best_by == 's1':
         print("⚠️ Audit Notice: 'select_best_by=s1' selects models using S1 test split (test data leakage). "
@@ -305,7 +306,7 @@ def train_extended_multimodal(
         except Exception:
             pass
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_channels,
         hidden_channels=hidden_dim,
         edge_feature_dim=edge_dim,
@@ -399,7 +400,7 @@ def train_extended_multimodal(
                         sub_graphs = [graph_list[idx] for idx in perm[i:i + pt_batch_sz]]
                         if len(sub_graphs) < 2:
                             continue
-                        pyg_batch = Batch.from_data_list(sub_graphs).to(device)
+                        pyg_batch = cast(Any, Batch.from_data_list(sub_graphs)).to(device)
                         v1 = augment_edge_aware_batch(pyg_batch, atom_feature_mask_rate=0.15, bond_feature_mask_rate=0.15)
                         v2 = augment_edge_aware_batch(pyg_batch, atom_feature_mask_rate=0.15, bond_feature_mask_rate=0.15)
                         z1 = pretrainer(v1)
@@ -554,12 +555,13 @@ def train_extended_multimodal(
                                 mb = model.encoder(db.x, db.edge_index, db.edge_attr, db.batch)[valid_pairs]
                             mol_sim = F.cosine_similarity(ma, mb, dim=-1).clamp(0.0, 1.0)
                             bio_loss = F.mse_loss(mol_sim, target_bio_sim)
+                            bio_align_weight = getattr(model, 'bio_align_weight', 0.10)
                             total_batch_loss = total_batch_loss + bio_align_weight * bio_loss
                 except Exception:
                     pass
 
             # Semi-Supervised Consistency Regularization
-            if ssl_iter is not None:
+            if ssl_iter is not None and ssl_loader is not None:
                 try:
                     ssl_batch = next(ssl_iter)
                 except StopIteration:
@@ -697,7 +699,7 @@ def train_extended_multimodal(
             s1_eval_model = model_from_checkpoint(ckpt_s1).to(device)
             s1_eval_model.load_state_dict(ckpt_s1['model_state_dict'])
         except Exception:
-            s1_eval_model = PxDDIModel(
+            s1_eval_model = AuditDDIModel(
                 in_channels=in_channels,
                 hidden_channels=hidden_dim,
                 edge_feature_dim=edge_dim,
@@ -825,7 +827,7 @@ def run_modality_ablation_study(
 
 
 def analyze_cold_start_coverage_errors(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     cache: MolecularCache,
     s1_test_df: pd.DataFrame,
     output_dir: str | Path,
@@ -967,7 +969,7 @@ def analyze_cold_start_coverage_errors(
 
 
 def evaluate_multimodal_calibration(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     cache: MolecularCache,
     val_df: pd.DataFrame,
     test_splits: dict[str, pd.DataFrame],
@@ -1043,7 +1045,7 @@ def evaluate_multimodal_calibration(
 
 
 def evaluate_multimodal_subcohort_generalization(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     cache: MolecularCache,
     test_df: pd.DataFrame,
     output_dir: str | Path,
@@ -1365,7 +1367,11 @@ def run_full_multimodal_study(
     patience: int = int(kwargs.pop('patience', 8))
 
     if output_dir is None:
-        out_p = Path(master_nodes_path).resolve().parent.parent / 'multimodal_study_results'
+        try:
+            from src.data_prep.path_resolver import resolve_results_base
+            out_p = resolve_results_base() / 'multimodal_study_results'
+        except Exception:
+            out_p = Path(master_nodes_path).resolve().parent.parent / 'multimodal_study_results'
     else:
         out_p = Path(output_dir)
     out_p.mkdir(parents=True, exist_ok=True)
@@ -1379,15 +1385,26 @@ def run_full_multimodal_study(
 
     # Resolve candidate dataset roots
     resolved_nodes = Path(master_nodes_path).resolve()
+    try:
+        from src.data_prep.path_resolver import resolve_data_base
+        canonical_base = resolve_data_base()
+    except Exception:
+        canonical_base = None
+
     candidate_data_roots = [
         resolved_nodes.parent.parent,
         resolved_nodes.parent,
+    ]
+    if canonical_base:
+        candidate_data_roots.insert(0, canonical_base)
+    candidate_data_roots.extend([
+        Path('/content/drive/MyDrive/auditddi-data'),
+        Path('/content/drive/MyDrive/auditddi'),
         Path('/content/drive/MyDrive/pxddi-data'),
-        Path('/content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/pxddi-data'),
-        Path('/content/pxddi-data'),
+        Path('auditddi-data'),
         Path('pxddi-data'),
         Path('.'),
-    ]
+    ])
     if 'data_dir' in kwargs and kwargs['data_dir']:
         candidate_data_roots.insert(0, Path(kwargs.pop('data_dir')).resolve())
 
@@ -1516,15 +1533,19 @@ def run_full_multimodal_study(
             data_root / 'checkpoints',
             data_root / 'checkpoints' / 'candidates',
             data_root / 'chembl',
-            data_root / 'pxddi' / 'checkpoints',
-            data_root / 'pxddi' / 'backend' / 'checkpoints',
+            data_root / 'ChEMBL',
+            data_root / 'auditddi' / 'checkpoints',
+            data_root / 'auditddi' / 'backend' / 'checkpoints',
             data_root / 'pretraining',
             data_root,
             resolved_nodes.parent,
             resolved_nodes.parent.parent,
+            Path('/content/drive/MyDrive/auditddi-results/pretraining'),
+            Path('/content/drive/MyDrive/auditddi-data/chembl'),
+            Path('/content/drive/MyDrive/auditddi-data/ChEMBL'),
+            Path('/content/drive/MyDrive/auditddi-data/checkpoints'),
+            Path('/content/drive/MyDrive/auditddi-data'),
             Path('/content/drive/MyDrive/pxddi-results/pretraining'),
-            Path('/content/drive/MyDrive/pxddi-data/chembl'),
-            Path('/content/drive/MyDrive/pxddi-data/checkpoints'),
             Path('/content/drive/MyDrive/pxddi-data'),
             Path('/content/drive/MyDrive'),
         ]
@@ -1683,6 +1704,7 @@ def run_full_multimodal_study(
         )
 
     # 7. Cross-Dataset Validation
+    cross_dataset_df: pd.DataFrame | None = None
     cross_dataset_dict: list[dict[str, Any]] = []
     if 's1_cold' in test_splits:
         cross_dataset_df = evaluate_cross_dataset_generalization(

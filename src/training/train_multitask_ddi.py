@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch_geometric.data import Batch
 
 from src.data_prep.cached_graph_loader import MolecularCache
-from src.models.ddi_model import MODEL_ARCHITECTURE_MULTIMODAL, PxDDIModel
+from src.models.ddi_model import MODEL_ARCHITECTURE_MULTIMODAL, AuditDDIModel, PxDDIModel
 
 
 def extract_top_side_effects(
@@ -143,7 +143,7 @@ def multitask_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def evaluate_multitask_loader(
-    model: PxDDIModel,
+    model: AuditDDIModel,
     loader: DataLoader,
     device: torch.device,
 ) -> dict[str, float]:
@@ -263,7 +263,7 @@ def run_multitask_side_effect_study(
     edge_dim = sample_batch['drug_a'].edge_attr.size(1)
 
     # 4. Multi-Task Model Instantiation
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=in_channels,
         hidden_channels=64,
         edge_feature_dim=edge_dim,

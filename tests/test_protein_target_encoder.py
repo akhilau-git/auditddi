@@ -56,7 +56,7 @@ def test_frozen_esm_cache_reuses_backbone_embeddings_without_a_second_forward():
 
 
 def test_sequence_target_attention_cross_modal_regression():
-    from src.models.ddi_model import PxDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
+    from src.models.ddi_model import AuditDDIModel, AuditDDIModel, MODEL_ARCHITECTURE_MULTIMODAL
     from torch_geometric.data import Data, Batch
 
     # Build minimal drug graphs
@@ -68,7 +68,7 @@ def test_sequence_target_attention_cross_modal_regression():
     cyp3a4_seq = "MALIPDLAMETWLLLAVSLVLLYLYGTHSHGLFKKLGIPGPTPLPFLGNILSYHKGFCMFDMECHKKYGK"
     egfr_seq = "MRPSGTAGAALLALLAALCPASRALEEKKVCQGTSNKLTQLGTFEDHFLSLQRMFNNCEVVLGNLEITYVQR"
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=78,
         hidden_channels=64,
         architecture_version=MODEL_ARCHITECTURE_MULTIMODAL,

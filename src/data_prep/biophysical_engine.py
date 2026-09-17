@@ -9,9 +9,39 @@ from __future__ import annotations
 
 import math
 from typing import Any
-import numpy as np
-from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+    class _MockNumPy:
+        float32 = float
+        ndarray: Any = list
+
+        @staticmethod
+        def clip(val, a_min, a_max):
+            return max(a_min, min(a_max, float(val)))
+
+        @staticmethod
+        def array(data, dtype=None):
+            return list(data)
+
+        @staticmethod
+        def zeros(shape, dtype=None):
+            count = shape if isinstance(shape, int) else shape[0]
+            return [0.0] * count
+
+    np = _MockNumPy()
+
+try:
+    from rdkit import Chem
+    from rdkit.Chem import rdMolDescriptors
+    HAS_RDKIT = True
+except ImportError:
+    Chem = None
+    rdMolDescriptors = None
+    HAS_RDKIT = False
 
 # ---------------------------------------------------------------------------
 # CYP Enzyme Nomenclature and Pharmacophore SMARTS
@@ -34,6 +64,10 @@ _SMARTS_RULES: dict[str, list[tuple[str, str, float]]] = {
         ("sulfonamide", "[SX4](=[OX1])(=[OX1])[NX3]", 1.8),
         ("acidic_phenol", "c[OX2H]", 1.2),
         ("tetrazole", "c1nnnn1", 1.5),
+        # Coumarins and azole-rich scaffolds are useful structural alerts for
+        # CYP2C9 competition in this heuristic layer.
+        ("coumarin", "O=c1occc2ccccc12", 1.8),
+        ("triazole", "n1cncn1", 1.4),
     ],
     "CYP1A2": [
         # Planar, flat heteroaromatic systems, purines, xanthines
@@ -52,38 +86,43 @@ _SMARTS_RULES: dict[str, list[tuple[str, str, float]]] = {
     "CYP3A4": [
         # Bulky, lipophilic multi-ring systems, macrolides, azoles
         ("imidazole_triazole", "c1c[nH,n]cn1", 1.8),
-        ("steroid_or_macroring", "[#6;R]1~[#6;R]~[#6;R]~[#6;R]~[#6;R]~[#6;R]1", 1.0),
+        # Use aliphatic ring atoms here.  ``[#6;R]`` also matches benzene,
+        # which made nearly every aromatic molecule look like a bulky steroid.
+        ("steroid_or_macroring", "[C;R]1~[C;R]~[C;R]~[C;R]~[C;R]~[C;R]1", 1.0),
         ("ester_or_ether_bulk", "[OD2]([#6])[#6]", 0.8),
     ],
 }
 
-_COMPILED_SMARTS: dict[str, list[tuple[str, Chem.Mol, float]]] = {}
-for _cyp, _rules in _SMARTS_RULES.items():
-    _compiled = []
-    for _name, _smarts, _weight in _rules:
-        _mol = Chem.MolFromSmarts(_smarts)
-        if _mol is not None:
-            _compiled.append((_name, _mol, _weight))
-    _COMPILED_SMARTS[_cyp] = _compiled
+_COMPILED_SMARTS: dict[str, list[tuple[str, Any, float]]] = {}
+if HAS_RDKIT and Chem is not None:
+    for _cyp, _rules in _SMARTS_RULES.items():
+        _compiled = []
+        for _name, _smarts, _weight in _rules:
+            _mol = Chem.MolFromSmarts(_smarts)
+            if _mol is not None:
+                _compiled.append((_name, _mol, _weight))
+        _COMPILED_SMARTS[_cyp] = _compiled
 
 # Site-of-metabolism oxidation motifs
-_SOM_SMARTS: list[tuple[str, Chem.Mol]] = [
-    ("n_dealkylation", Chem.MolFromSmarts("[NX3]([CH3,CH2])[#6]")),
-    ("o_dealkylation", Chem.MolFromSmarts("[OX2][CH3,CH2]")),
-    ("aliphatic_hydroxylation", Chem.MolFromSmarts("[CH2,CH3;!$(C=O);!$(C#N)]")),
-    ("benzylic_oxidation", Chem.MolFromSmarts("c[CH2,CH3]")),
-    ("aromatic_hydroxylation", Chem.MolFromSmarts("c1ccccc1")),
-]
-_SOM_SMARTS = [(name, mol) for name, mol in _SOM_SMARTS if mol is not None]
+_SOM_SMARTS: list[tuple[str, Any]] = []
+if HAS_RDKIT and Chem is not None:
+    _raw_som = [
+        ("n_dealkylation", Chem.MolFromSmarts("[NX3]([CH3,CH2])[#6]")),
+        ("o_dealkylation", Chem.MolFromSmarts("[OX2][CH3,CH2]")),
+        ("aliphatic_hydroxylation", Chem.MolFromSmarts("[CH2,CH3;!$(C=O);!$(C#N)]")),
+        ("benzylic_oxidation", Chem.MolFromSmarts("c[CH2,CH3]")),
+        ("aromatic_hydroxylation", Chem.MolFromSmarts("c1ccccc1")),
+    ]
+    _SOM_SMARTS = [(name, mol) for name, mol in _raw_som if mol is not None]
 
 
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(min(x, 20.0), -20.0)))
 
 
-def compute_cyp_affinities(mol: Chem.Mol) -> dict[str, float]:
+def compute_cyp_affinities(mol: Any) -> dict[str, float]:
     """Compute continuous liability/substrate probability for top human CYP enzymes."""
-    if mol is None:
+    if mol is None or not HAS_RDKIT or rdMolDescriptors is None:
         return {cyp: 0.2 for cyp in CYP_ENZYMES}
 
     mw = rdMolDescriptors.CalcExactMolWt(mol)
@@ -135,6 +174,37 @@ def compute_cyp_affinities(mol: Chem.Mol) -> dict[str, float]:
         cyp2c9_raw += 0.8
     if hbd >= 1:
         cyp2c9_raw += 0.5
+    # Coumarin-like lactones combine an aromatic ring oxygen with an aromatic
+    # carbonyl.  The fused-ring SMARTS is intentionally not relied on here:
+    # equivalent valid SMILES representations can encode the fusion in either
+    # direction.  This topology check keeps the rule representation-invariant.
+    has_aromatic_ring_oxygen = any(
+        atom.GetAtomicNum() == 8 and atom.GetIsAromatic() and atom.IsInRing()
+        for atom in mol.GetAtoms()
+    )
+    double_bond = Chem.BondType.DOUBLE if (Chem is not None and hasattr(Chem, "BondType")) else None
+    has_aromatic_carbonyl = any(
+        atom.GetAtomicNum() == 6
+        and any(
+            bond.GetBondType() == double_bond
+            and bond.GetOtherAtom(atom).GetAtomicNum() == 8
+            for bond in atom.GetBonds()
+        )
+        and any(neighbor.GetIsAromatic() for neighbor in atom.GetNeighbors())
+        for atom in mol.GetAtoms()
+    )
+    if has_aromatic_ring_oxygen and has_aromatic_carbonyl:
+        cyp2c9_raw += 1.8
+    # Fluorinated triazole-containing structures (for example azole
+    # antifungal-like scaffolds) are otherwise scored mostly as generic
+    # CYP3A4 substrates.  Preserve that signal but make the competing CYP2C9
+    # liability explicit for collision analysis.
+    aromatic_n_count = sum(
+        1 for atom in mol.GetAtoms() if atom.GetIsAromatic() and atom.GetAtomicNum() == 7
+    )
+    fluorine_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 9)
+    if aromatic_n_count >= 3 and fluorine_count >= 1:
+        cyp2c9_raw += 1.2
     scores["CYP2C9"] = _sigmoid(cyp2c9_raw - 1.5)
 
     # 4. CYP1A2 Score: flat, planar heteroaromatic rings, low Csp3, lower MW
@@ -164,9 +234,9 @@ def compute_cyp_affinities(mol: Chem.Mol) -> dict[str, float]:
     return scores
 
 
-def compute_admet_pharmacokinetics(mol: Chem.Mol) -> dict[str, float]:
+def compute_admet_pharmacokinetics(mol: Any) -> dict[str, float]:
     """In silico pharmacokinetic parameter estimation for absorption, distribution, and clearance."""
-    if mol is None:
+    if mol is None or not HAS_RDKIT or rdMolDescriptors is None:
         return {
             "p_eff": 0.5,
             "f_unbound": 0.1,
@@ -218,9 +288,11 @@ def compute_admet_pharmacokinetics(mol: Chem.Mol) -> dict[str, float]:
 
 def compute_biophysical_vector(smiles: str) -> np.ndarray:
     """Compute complete 12-dimensional biophysical pharmacokinetic descriptor vector."""
+    if not HAS_RDKIT or Chem is None:
+        return np.zeros(BIOPHYSICAL_DIM, dtype=getattr(np, "float32", float))
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        return np.zeros(BIOPHYSICAL_DIM, dtype=np.float32)
+        return np.zeros(BIOPHYSICAL_DIM, dtype=getattr(np, "float32", float))
 
     cyp_scores = compute_cyp_affinities(mol)
     admet = compute_admet_pharmacokinetics(mol)
@@ -238,13 +310,15 @@ def compute_biophysical_vector(smiles: str) -> np.ndarray:
         admet["mw_norm"],
         admet["rotb_norm"],
         admet["hepatic_clearance_bias"],
-    ], dtype=np.float32)
+    ], dtype=getattr(np, "float32", float))
 
     return vec
 
 
 def identify_site_of_metabolism(smiles: str) -> list[dict[str, Any]]:
     """Identify the primary labile atomic positions vulnerable to hepatic oxidation."""
+    if not HAS_RDKIT or Chem is None:
+        return []
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return []
@@ -263,23 +337,52 @@ def identify_site_of_metabolism(smiles: str) -> list[dict[str, Any]]:
 
 def compute_metabolic_collision_score(smiles_a: str, smiles_b: str) -> dict[str, Any]:
     """Compute symmetric competitive metabolic clearance collision between two drugs."""
-    mol_a = Chem.MolFromSmiles(smiles_a)
-    mol_b = Chem.MolFromSmiles(smiles_b)
+    mol_a = Chem.MolFromSmiles(smiles_a) if (HAS_RDKIT and Chem is not None) else None
+    mol_b = Chem.MolFromSmiles(smiles_b) if (HAS_RDKIT and Chem is not None) else None
 
-    cyp_a = compute_cyp_affinities(mol_a)
-    cyp_b = compute_cyp_affinities(mol_b)
-    pk_a = compute_admet_pharmacokinetics(mol_a)
-    pk_b = compute_admet_pharmacokinetics(mol_b)
+    if mol_a is not None and mol_b is not None:
+        cyp_a = compute_cyp_affinities(mol_a)
+        cyp_b = compute_cyp_affinities(mol_b)
+        pk_a = compute_admet_pharmacokinetics(mol_a)
+        pk_b = compute_admet_pharmacokinetics(mol_b)
+    else:
+        try:
+            from src.data_prep.admet_engine import ADMETEngine
+        except ModuleNotFoundError:
+            from data_prep.admet_engine import ADMETEngine
+        engine = ADMETEngine()
+        prof_a = engine.analyze_drug(smiles_a, "Drug_A")
+        prof_b = engine.analyze_drug(smiles_b, "Drug_B")
+        cyp_a = prof_a["admet"]["metabolism"]["cyp_affinity_profile"]
+        cyp_b = prof_b["admet"]["metabolism"]["cyp_affinity_profile"]
+        pk_a = {
+            "f_unbound": prof_a["admet"]["distribution"]["fraction_unbound_plasma"],
+            "p_eff": 0.8 if prof_a["admet"]["absorption"]["human_intestinal_absorption"] == "High" else 0.4,
+            "hepatic_clearance_bias": 0.8 if "Hepatic" in prof_a["admet"]["excretion"]["primary_clearance_route"] else 0.2,
+        }
+        pk_b = {
+            "f_unbound": prof_b["admet"]["distribution"]["fraction_unbound_plasma"],
+            "p_eff": 0.8 if prof_b["admet"]["absorption"]["human_intestinal_absorption"] == "High" else 0.4,
+            "hepatic_clearance_bias": 0.8 if "Hepatic" in prof_b["admet"]["excretion"]["primary_clearance_route"] else 0.2,
+        }
 
     # 1. CYP Shared Substrate Overlap
-    # Dot product of CYP probability profiles
+    # Dot product of CYP liabilities above a deliberately conservative generic
+    # background.  A small non-zero score exists for every CYP model output;
+    # treating those baseline values as a collision made unrelated, polar drug
+    # pairs look high-risk.
+    baseline_liability = 0.60
     cyp_overlap = 0.0
     enzyme_breakdown: dict[str, float] = {}
     for cyp in CYP_ENZYMES:
-        score = cyp_a[cyp] * cyp_b[cyp]
+        score = max(0.0, cyp_a[cyp] - baseline_liability) * max(
+            0.0, cyp_b[cyp] - baseline_liability
+        )
         enzyme_breakdown[cyp] = score
         cyp_overlap += score
-    cyp_overlap_normalized = float(np.clip(cyp_overlap / 1.5, 0.0, 1.0))
+    # The denominator maps simultaneous high liabilities to the upper range
+    # without allowing several middling, non-specific scores to dominate.
+    cyp_overlap_normalized = float(np.clip(cyp_overlap / 0.18, 0.0, 1.0))
 
     # 2. High-Binding Displacement Collision
     # If both drugs bind heavily to plasma proteins (low fu), one displaces the other

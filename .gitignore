@@ -27,8 +27,6 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -74,6 +72,7 @@ yarn-error.log*
 # Run outputs and local checkpoint backups live in Drive/local storage, not Git.
 backend/artifacts/
 backend/plots/
+backend/auditddi-results/
 backend/pxddi-results/
 backend/checkpoints/
 *.pt
@@ -83,7 +82,8 @@ backend/checkpoints/
 *.safetensors
 backend/latest_results/
 
-# Experiment run artifacts — large CSVs, figures, checkpoints — live in Drive only.
+# Run outputs, results, checkpoints, and experiment data live in Drive/local storage, not Git.
+results/
 backend/experiments/
 backend/new results 5-9-26/
 
@@ -97,3 +97,7 @@ deliverables/
 *.swo
 *~
 .DS_Store
+*.sqlite3
+*.db
+backend/state/*
+!backend/state/.gitkeep

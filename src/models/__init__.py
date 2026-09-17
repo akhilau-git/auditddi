@@ -1,6 +1,6 @@
 from .ddi_model import (
-    PxDDIModel,
     AuditDDIModel,
+    PxDDIModel,
     MODEL_ARCHITECTURE_LEGACY,
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MOTIF_EDGE_AWARE,
@@ -11,8 +11,8 @@ from .ddi_model import (
 from .neighbor_memory import AuditableNeighborMemory
 
 __all__ = [
-    'PxDDIModel',
     'AuditDDIModel',
+    'PxDDIModel',
     'AuditableNeighborMemory',
     'MODEL_ARCHITECTURE_LEGACY',
     'MODEL_ARCHITECTURE_EDGE_AWARE',

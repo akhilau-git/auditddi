@@ -1,4 +1,4 @@
-"""Train and evaluate a fixed-split 3–5 member PxDDI research ensemble.
+"""Train and evaluate a fixed-split 3–5 member AuditDDI research ensemble.
 
 Each member receives a unique initialization/training-order seed but the same
 audited data sample and S1/S2 split.  The script averages raw member scores,
@@ -54,21 +54,21 @@ from src.training.train_full_pipeline_v2 import (
 
 
 def _positive_int(name: str, default: int) -> int:
-    value = int(os.environ.get(name, default))
+    value = int(get_auditddi_env(name, default))
     if value <= 0:
         raise ValueError(f'{name} must be a positive integer.')
     return value
 
 
 def _open_unit_interval(name: str, default: float) -> float:
-    value = float(os.environ.get(name, default))
+    value = float(get_auditddi_env(name, default))
     if not 0 < value < 1:
         raise ValueError(f'{name} must lie strictly between zero and one.')
     return value
 
 
 def _closed_unit_interval(name: str, default: float) -> float:
-    value = float(os.environ.get(name, default))
+    value = float(get_auditddi_env(name, default))
     if not 0 <= value <= 1:
         raise ValueError(f'{name} must lie between zero and one.')
     return value
@@ -78,31 +78,47 @@ def parse_member_seeds(value: str) -> list[int]:
     """Parse three to five distinct positive ensemble member seeds."""
     seeds = [int(part.strip()) for part in value.split(',') if part.strip()]
     if not 3 <= len(seeds) <= 5:
-        raise ValueError('PXDDI_ENSEMBLE_SEEDS must contain three to five seeds.')
+        raise ValueError('AUDITDDI_ENSEMBLE_SEEDS must contain three to five seeds.')
     if any(seed <= 0 for seed in seeds) or len(set(seeds)) != len(seeds):
-        raise ValueError('PXDDI_ENSEMBLE_SEEDS must contain distinct positive seeds.')
+        raise ValueError('AUDITDDI_ENSEMBLE_SEEDS must contain distinct positive seeds.')
     return seeds
 
 
-DATA_BASE = Path(os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data'))
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base,
+    get_auditddi_env,
+)
+
+# Unit-test imports and post-run analysis do not require the raw Drive data.
+# Training does, so preserve the original actionable resolver error for main.
+DATA_BASE_RESOLUTION_ERROR: FileNotFoundError | None = None
+try:
+    DATA_BASE = resolve_data_base()
+except FileNotFoundError as error:
+    DATA_BASE_RESOLUTION_ERROR = error
+    DATA_BASE = Path(get_auditddi_env('DATA_BASE', PROJECT_ROOT / 'data'))
 RESULTS_BASE = resolve_results_base()
-MEMBER_SEEDS = parse_member_seeds(os.environ.get('PXDDI_ENSEMBLE_SEEDS', '11,23,37'))
-SPLIT_SEED = _positive_int('PXDDI_ENSEMBLE_SPLIT_SEED', 42)
-EPOCHS = _positive_int('PXDDI_ENSEMBLE_EPOCHS', 200)
-ARCHITECTURE = os.environ.get('PXDDI_ENSEMBLE_ARCHITECTURE', 'edge_aware_gat_v2')
-USE_TOXICITY_PAIR_FEATURES = os.environ.get('PXDDI_ENSEMBLE_USE_TOXICITY_PAIR_FEATURES', 'true')
-TOXICITY_LOSS_WEIGHT = float(os.environ.get('PXDDI_ENSEMBLE_TOXICITY_LOSS_WEIGHT', '0.3'))
+MEMBER_SEEDS = parse_member_seeds(get_auditddi_env('ENSEMBLE_SEEDS', '11,23,37'))
+SPLIT_SEED = _positive_int('ENSEMBLE_SPLIT_SEED', 42)
+EPOCHS = _positive_int('ENSEMBLE_EPOCHS', 200)
+ARCHITECTURE = str(get_auditddi_env('ENSEMBLE_ARCHITECTURE', 'edge_aware_gat_v2'))
+# The primary paper candidate keeps toxicity features disabled.  Only the
+# separately reported toxicity ablation should opt in, because the clean
+# toxicity bridge covers far fewer structures than the DDI task.
+USE_TOXICITY_PAIR_FEATURES = str(get_auditddi_env('ENSEMBLE_USE_TOXICITY_PAIR_FEATURES', 'false'))
+TOXICITY_LOSS_WEIGHT = float(get_auditddi_env('ENSEMBLE_TOXICITY_LOSS_WEIGHT', '0.0'))
 if TOXICITY_LOSS_WEIGHT < 0:
-    raise ValueError('PXDDI_ENSEMBLE_TOXICITY_LOSS_WEIGHT must be non-negative.')
-CONFORMAL_ALPHA = _open_unit_interval('PXDDI_ENSEMBLE_CONFORMAL_ALPHA', 0.1)
+    raise ValueError('AUDITDDI_ENSEMBLE_TOXICITY_LOSS_WEIGHT must be non-negative.')
+CONFORMAL_ALPHA = _open_unit_interval('ENSEMBLE_CONFORMAL_ALPHA', 0.1)
 OOD_MINIMUM_SIMILARITY = _closed_unit_interval(
-    'PXDDI_ENSEMBLE_OOD_MINIMUM_SIMILARITY', 0.4
+    'ENSEMBLE_OOD_MINIMUM_SIMILARITY', 0.4
 )
 DISAGREEMENT_THRESHOLD = _closed_unit_interval(
-    'PXDDI_ENSEMBLE_DISAGREEMENT_THRESHOLD', 0.10
+    'ENSEMBLE_DISAGREEMENT_THRESHOLD', 0.10
 )
 ENSEMBLES_BASE = Path(
-    os.environ.get('PXDDI_ENSEMBLES_BASE', RESULTS_BASE / 'ensembles')
+    get_auditddi_env('ENSEMBLES_BASE', RESULTS_BASE / 'ensembles')
 )
 TRAINING_SCRIPT = PROJECT_ROOT / 'src' / 'training' / 'train_full_pipeline_v2.py'
 
@@ -175,21 +191,23 @@ def train_members(study_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
         artifact_base = member_dir / 'artifacts'
         checkpoint_path = member_dir / 'checkpoints' / f'ensemble_member_{model_seed}.pt'
         environment = os.environ.copy()
-        environment.update({
-            'PXDDI_DATA_BASE': str(DATA_BASE),
-            'PXDDI_RESULTS_BASE': str(RESULTS_BASE),
-            'PXDDI_ARTIFACTS_BASE': str(artifact_base),
-            'PXDDI_CHECKPOINT_PATH': str(checkpoint_path),
-            'PXDDI_PUBLISH_LATEST_RESULTS': 'false',
-            'PXDDI_RUN_CANDIDATE_EXPLANATIONS': 'false',
-            'PXDDI_SEED': str(model_seed),
-            'PXDDI_MODEL_SEED': str(model_seed),
-            'PXDDI_SPLIT_SEED': str(SPLIT_SEED),
-            'PXDDI_EPOCHS': str(EPOCHS),
-            'PXDDI_MODEL_ARCHITECTURE': ARCHITECTURE,
-            'PXDDI_USE_TOXICITY_PAIR_FEATURES': USE_TOXICITY_PAIR_FEATURES,
-            'PXDDI_TOXICITY_LOSS_WEIGHT': str(TOXICITY_LOSS_WEIGHT),
-        })
+        for key_suffix, val in [
+            ('DATA_BASE', str(DATA_BASE)),
+            ('RESULTS_BASE', str(RESULTS_BASE)),
+            ('ARTIFACTS_BASE', str(artifact_base)),
+            ('CHECKPOINT_PATH', str(checkpoint_path)),
+            ('PUBLISH_LATEST_RESULTS', 'false'),
+            ('RUN_CANDIDATE_EXPLANATIONS', 'false'),
+            ('SEED', str(model_seed)),
+            ('MODEL_SEED', str(model_seed)),
+            ('SPLIT_SEED', str(SPLIT_SEED)),
+            ('EPOCHS', str(EPOCHS)),
+            ('MODEL_ARCHITECTURE', ARCHITECTURE),
+            ('USE_TOXICITY_PAIR_FEATURES', USE_TOXICITY_PAIR_FEATURES),
+            ('TOXICITY_LOSS_WEIGHT', str(TOXICITY_LOSS_WEIGHT)),
+        ]:
+            environment[f'AUDITDDI_{key_suffix}'] = val
+            environment[f'PXDDI_{key_suffix}'] = val
         print(f'Training ensemble member model_seed={model_seed}.')
         subprocess.run([sys.executable, str(TRAINING_SCRIPT)], check=True, env=environment)
         run_dir = find_completed_run(artifact_base)
@@ -252,6 +270,8 @@ def _append_ensemble_columns(
 
 
 def main() -> None:
+    if DATA_BASE_RESOLUTION_ERROR is not None:
+        raise DATA_BASE_RESOLUTION_ERROR
     study_id = datetime.now(timezone.utc).strftime('ensemble_%Y%m%dT%H%M%SZ')
     study_dir = ENSEMBLES_BASE / study_id
     study_dir.mkdir(parents=True, exist_ok=False)
@@ -266,7 +286,7 @@ def main() -> None:
         'structural_ood_minimum_similarity': OOD_MINIMUM_SIMILARITY,
         'promotion_policy': (
             'This is an offline research ensemble. It does not overwrite or deploy '
-            'backend/checkpoints/pxddi_model.pt.'
+            'backend/checkpoints/auditddi_model.pt.'
         ),
     })
     member_runs = train_members(study_dir)

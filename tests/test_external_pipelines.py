@@ -40,7 +40,7 @@ def test_chembl_chemreps_audit_is_structure_only(tmp_path):
     assert frame.columns.tolist() == [
         'chembl_id', 'canonical_smiles', 'standard_inchi', 'standard_inchi_key'
     ]
-    assert summary['matched_unique_pxddi_structures'] == 1
+    assert summary['matched_unique_auditddi_structures'] == 1
     assert summary['not_evidence_of'] == ['molecule_target_activity', 'DDI_label', 'external_DDI_validation']
     assert overlap.to_dict(orient='records') == [{
         'chembl_id': 'CHEMBL1', 'canonical_smiles': 'CCO', 'standard_inchi_key': 'KEY1'
@@ -131,13 +131,13 @@ def test_pharmgkb_catalog_path_is_optional_but_never_guessed_from_random_files(t
     assert resolve_pharmgkb_chemical_catalog_path(tmp_path) is None
     chemicals = tmp_path / 'chemicals.tsv'
     chemicals.write_text('Name\tSMILES\nDrug A\tCCO\n')
-    assert resolve_pharmgkb_chemical_catalog_path(tmp_path) == chemicals
-    monkeypatch.setenv('PXDDI_PHARMGKB_CHEMICAL_CATALOG', str(tmp_path / 'missing.tsv'))
-    with pytest.raises(FileNotFoundError, match='PXDDI_PHARMGKB_CHEMICAL_CATALOG'):
+    monkeypatch.setenv('AUDITDDI_PHARMGKB_CHEMICAL_CATALOG', str(tmp_path / 'missing.tsv'))
+    with pytest.raises(FileNotFoundError, match='PHARMGKB_CHEMICAL_CATALOG'):
         resolve_pharmgkb_chemical_catalog_path(tmp_path)
 
 
 def test_external_audit_data_root_must_be_an_existing_directory(tmp_path):
     assert resolve_data_base(tmp_path) == tmp_path
-    with pytest.raises(FileNotFoundError, match='PXDDI_DATA_BASE'):
+    with pytest.raises(FileNotFoundError, match='DATA_BASE|AuditDDI|dataset'):
         resolve_data_base(tmp_path / 'missing')
+

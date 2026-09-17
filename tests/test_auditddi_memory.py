@@ -101,7 +101,7 @@ def test_auditddi_model_forward_and_symmetry():
         feature_schema=FEATURE_SCHEMA_RICH,
         include_fingerprint_features=True,
     )
-    assert ga is not None and gb is not None
+    assert ga is not None and gb is not None and ga.x is not None and ga.edge_attr is not None
 
     # Synthetic memory feature [density, max_support, confidence]
     mem_features = torch.tensor([[0.75, 0.60, 0.85]], dtype=torch.float)
@@ -129,6 +129,7 @@ def test_auditddi_backward_pass():
     smiles_b = 'CC(C)CC1=CC=C(C=C1)C(C)C(=O)O'
     ga = smiles_to_graph(smiles_a, feature_schema=FEATURE_SCHEMA_RICH, include_fingerprint_features=True)
     gb = smiles_to_graph(smiles_b, feature_schema=FEATURE_SCHEMA_RICH, include_fingerprint_features=True)
+    assert ga is not None and gb is not None and ga.x is not None and ga.edge_attr is not None
 
     mem_features = torch.tensor([[0.5, 0.3, 0.7]], dtype=torch.float)
 
@@ -150,8 +151,8 @@ def test_auditddi_backward_pass():
     assert any(p.grad is not None for p in model.encoder.parameters())
 
 
-def test_pxddi_dataset_dataloader_with_neighbor_memory():
-    from src.training.train_full_pipeline_v2 import PxDDIDataset
+def test_auditddi_dataset_dataloader_with_neighbor_memory():
+    from src.training.train_full_pipeline_v2 import AuditDDIDataset
     from torch_geometric.loader import DataLoader
     import pandas as pd
 
@@ -163,7 +164,7 @@ def test_pxddi_dataset_dataloader_with_neighbor_memory():
     mem = AuditableNeighborMemory(k_neighbors=1)
     mem.fit(list(df['source']), list(df['target']), list(df['label']))
 
-    dataset = PxDDIDataset(
+    dataset = AuditDDIDataset(
         dataframe=df,
         toxicity_lookup={},
         neighbor_memory=mem,

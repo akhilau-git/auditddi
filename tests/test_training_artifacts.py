@@ -40,6 +40,8 @@ with patch('torch.cuda.is_available', return_value=True):
         should_stop_early,
         validate_checkpoint_for_evaluation,
     )
+
+
 def test_get_file_hash():
     """Verify SHA-256 hash calculation."""
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -55,15 +57,13 @@ def test_get_file_hash():
 
 
 def test_results_base_can_be_separate_from_read_only_input_data(tmp_path):
-    writable_results = tmp_path / 'my_drive' / 'pxddi_results'
+    writable_results = tmp_path / 'my_drive' / 'auditddi_results'
 
     assert resolve_results_base(
         writable_results, data_base=tmp_path / 'shared_read_only_data'
     ) == writable_results
 
 def test_safe_checkpoint_save_atomic_replace():
-    """Verify safe_checkpoint_save writes to tmp, validates, then replaces."""
-    
     # Dummy state
     state = {'test_key': torch.tensor([1, 2, 3])}
     

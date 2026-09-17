@@ -18,7 +18,7 @@ from src.models.candidate_explainability import (
 from src.models.ddi_model import (
     MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
     MODEL_ARCHITECTURE_EDGE_AWARE,
-    PxDDIModel,
+    AuditDDIModel,
 )
 
 
@@ -30,7 +30,7 @@ def _rich_graph(smiles: str):
 
 def test_occlusion_explanation_reports_raw_score_and_quality_checks():
     graph_a, graph_b = _rich_graph('CCO'), _rich_graph('CCN')
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=8,
         architecture_version=MODEL_ARCHITECTURE_EDGE_AWARE,
@@ -61,7 +61,7 @@ def test_occlusion_explanation_reports_raw_score_and_quality_checks():
 def test_cross_attention_artifact_exposes_pair_isolated_associations_only():
     graph_a = _rich_graph('CC(=O)OC1=CC=CC=C1C(=O)O')  # aspirin
     graph_b = _rich_graph('CC(=O)NC1=CC=C(O)C=C1')  # acetaminophen
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=8,
         architecture_version=MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
@@ -101,7 +101,7 @@ def test_representative_selection_prioritizes_each_confusion_case_deterministica
 
 def test_cross_attention_maps_are_normalized_for_each_source_atom():
     graph_a, graph_b = _rich_graph('CCO'), _rich_graph('CCN')
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=8,
         architecture_version=MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
@@ -137,7 +137,7 @@ def test_explain_multimodal_pair():
     from src.models.ddi_model import MODEL_ARCHITECTURE_MULTIMODAL
 
     graph_a, graph_b = _rich_graph('CCO'), _rich_graph('CCN')
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=RICH_NUM_ATOM_FEATURES,
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_MULTIMODAL,
@@ -191,7 +191,7 @@ def test_explain_multimodal_pair_with_cache():
     cache.register_drug(drug_a, gene_vector=[1.0 if i in {0, 2} else 0.0 for i in range(10)], toxicity_score=0.35)
     cache.register_drug(drug_b, gene_vector=[1.0 if i in {2, 4} else 0.0 for i in range(10)], toxicity_score=0.20)
 
-    model = PxDDIModel(
+    model = AuditDDIModel(
         in_channels=cache.graphs[drug_a].x.size(1),
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_MULTIMODAL,
@@ -225,13 +225,13 @@ def test_explain_multimodal_pair_with_cache():
 
 def test_legacy_representation_helper_no_crash():
     from src.data_prep.cached_graph_loader import MolecularCache
-    from src.models.ddi_model import MODEL_ARCHITECTURE_LEGACY, PxDDIModel
+    from src.models.ddi_model import MODEL_ARCHITECTURE_LEGACY, AuditDDIModel
 
     cache = MolecularCache(gene_dim=10)
     drug_a = 'CCO'
     cache.register_drug(drug_a)
 
-    legacy_model = PxDDIModel(
+    legacy_model = AuditDDIModel(
         in_channels=cache.graphs[drug_a].x.size(1),
         hidden_channels=16,
         architecture_version=MODEL_ARCHITECTURE_LEGACY,

@@ -53,6 +53,7 @@ def test_pull_realtime_uniprot_dataset_local_test(tmp_path, monkeypatch):
     assert manifest["total_sequences_saved"] > 0
 
 
+@pytest.mark.live_network
 def test_resolve_uniprot_identifier():
     from src.data_prep.download_uniprot_data import resolve_uniprot_identifier
 
@@ -106,6 +107,7 @@ def test_select_best_uniprot_match():
     assert best_acc == "P23141"
 
 
+@pytest.mark.live_network
 def test_resolve_cycsp5_canonical():
     from src.data_prep.download_uniprot_data import resolve_uniprot_identifier
 
@@ -115,6 +117,7 @@ def test_resolve_cycsp5_canonical():
     assert entry.get("sequence_length") == 132
 
 
+@pytest.mark.live_network
 def test_all_targets_preserved_and_resolved(tmp_path):
     from src.data_prep.download_uniprot_data import resolve_uniprot_identifier
 
@@ -138,6 +141,5 @@ def test_all_targets_preserved_and_resolved(tmp_path):
         e = resolve_uniprot_identifier(sym)
         assert e and e.get("uniprot_id"), f"Target {sym} failed to resolve"
         assert e.get("sequence_length", 0) > 50, f"Target {sym} has invalid sequence length"
-
 
 
