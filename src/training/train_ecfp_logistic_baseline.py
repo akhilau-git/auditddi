@@ -48,42 +48,46 @@ from training.train_full_pipeline_v2 import (
     partition_validation_for_model_selection,
     partition_validation_for_posthoc,
     posthoc_validation_partition_summary,
-    resolve_results_base,
     save_split_manifests,
     save_training_history,
     select_validation_threshold,
 )
+from data_prep.path_resolver import (
+    resolve_data_base,
+    resolve_results_base,
+    get_auditddi_env,
+)
 
 
 def _positive_int_from_environment(name: str, default: int) -> int:
-    value = int(os.environ.get(name, default))
+    value = int(get_auditddi_env(name, default))
     if value <= 0:
         raise ValueError(f'{name} must be a positive integer.')
     return value
 
 
 def _non_negative_int_from_environment(name: str, default: int) -> int:
-    value = int(os.environ.get(name, default))
+    value = int(get_auditddi_env(name, default))
     if value < 0:
         raise ValueError(f'{name} must be zero or a positive integer.')
     return value
 
 
-SEED = _positive_int_from_environment('PXDDI_SEED', 42)
-MODEL_SEED = _positive_int_from_environment('PXDDI_MODEL_SEED', SEED)
-SPLIT_SEED = _positive_int_from_environment('PXDDI_SPLIT_SEED', SEED)
-DATA_CAP = _positive_int_from_environment('PXDDI_DATA_CAP', 200000)
-ECFP_RADIUS = _positive_int_from_environment('PXDDI_ECFP_RADIUS', 2)
-ECFP_NUM_BITS = _positive_int_from_environment('PXDDI_ECFP_NUM_BITS', 1024)
-ECFP_EPOCHS = _positive_int_from_environment('PXDDI_ECFP_EPOCHS', 30)
-ECFP_BATCH_SIZE = _positive_int_from_environment('PXDDI_ECFP_BATCH_SIZE', 1024)
-NEGATIVE_SAMPLING_STRATEGY = os.environ.get('PXDDI_NEGATIVE_SAMPLING_STRATEGY', 'uniform')
-NEGATIVE_SAMPLING_PROTOCOL = os.environ.get(
-    'PXDDI_NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
-).strip().lower()
+SEED = _positive_int_from_environment('SEED', 42)
+MODEL_SEED = _positive_int_from_environment('MODEL_SEED', SEED)
+SPLIT_SEED = _positive_int_from_environment('SPLIT_SEED', SEED)
+DATA_CAP = _positive_int_from_environment('DATA_CAP', 200000)
+ECFP_RADIUS = _positive_int_from_environment('ECFP_RADIUS', 2)
+ECFP_NUM_BITS = _positive_int_from_environment('ECFP_NUM_BITS', 1024)
+ECFP_EPOCHS = _positive_int_from_environment('ECFP_EPOCHS', 30)
+ECFP_BATCH_SIZE = _positive_int_from_environment('ECFP_BATCH_SIZE', 1024)
+NEGATIVE_SAMPLING_STRATEGY = str(get_auditddi_env('NEGATIVE_SAMPLING_STRATEGY', 'uniform'))
+NEGATIVE_SAMPLING_PROTOCOL = str(get_auditddi_env(
+    'NEGATIVE_SAMPLING_PROTOCOL', 'split_aware_standard_v1'
+)).strip().lower()
 if NEGATIVE_SAMPLING_PROTOCOL not in {'split_aware_standard_v1', 'legacy_pre_split_v1'}:
     raise ValueError(
-        'PXDDI_NEGATIVE_SAMPLING_PROTOCOL must be split_aware_standard_v1 or '
+        'AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL must be split_aware_standard_v1 or '
         'legacy_pre_split_v1.'
     )
 NEGATIVE_LABEL_MEANING = (
@@ -92,33 +96,38 @@ NEGATIVE_LABEL_MEANING = (
     else f'unreported_twosides_sampled_{NEGATIVE_SAMPLING_STRATEGY}'
 )
 MODEL_SELECTION_VALIDATION_FRACTION = float(
-    os.environ.get('PXDDI_MODEL_SELECTION_VALIDATION_FRACTION', '0.5')
+    get_auditddi_env('MODEL_SELECTION_VALIDATION_FRACTION', '0.5')
 )
 EARLY_STOPPING_PATIENCE = _non_negative_int_from_environment(
-    'PXDDI_ECFP_EARLY_STOPPING_PATIENCE', 6
+    'ECFP_EARLY_STOPPING_PATIENCE', 6
 )
 EARLY_STOPPING_MIN_EPOCHS = _positive_int_from_environment(
-    'PXDDI_ECFP_EARLY_STOPPING_MIN_EPOCHS', 8
+    'ECFP_EARLY_STOPPING_MIN_EPOCHS', 8
 )
 if ECFP_NUM_BITS < 128:
-    raise ValueError('PXDDI_ECFP_NUM_BITS must be at least 128.')
+    raise ValueError('AUDITDDI_ECFP_NUM_BITS must be at least 128.')
 if EARLY_STOPPING_MIN_EPOCHS > ECFP_EPOCHS:
-    raise ValueError('PXDDI_ECFP_EARLY_STOPPING_MIN_EPOCHS must not exceed PXDDI_ECFP_EPOCHS.')
+    raise ValueError('AUDITDDI_ECFP_EARLY_STOPPING_MIN_EPOCHS must not exceed AUDITDDI_ECFP_EPOCHS.')
 if not 0 < MODEL_SELECTION_VALIDATION_FRACTION < 1:
     raise ValueError(
-        'PXDDI_MODEL_SELECTION_VALIDATION_FRACTION must lie strictly between zero and one.'
+        'AUDITDDI_MODEL_SELECTION_VALIDATION_FRACTION must lie strictly between zero and one.'
     )
 
-DRIVE_BASE = Path(os.environ.get('PXDDI_DATA_BASE', '/content/drive/MyDrive/pxddi-data'))
+DATA_BASE_RESOLUTION_ERROR: FileNotFoundError | None = None
+try:
+    DRIVE_BASE = resolve_data_base()
+except FileNotFoundError as error:
+    DATA_BASE_RESOLUTION_ERROR = error
+    DRIVE_BASE = Path(get_auditddi_env('DATA_BASE', PROJECT_ROOT / 'data'))
 TWOSIDES_EDGES = DRIVE_BASE / 'twosides' / 'drug_drug_edges.csv'
 RESULTS_BASE = resolve_results_base()
-ARTIFACTS_BASE = Path(os.environ.get('PXDDI_ARTIFACTS_BASE', RESULTS_BASE / 'artifacts'))
+ARTIFACTS_BASE = Path(get_auditddi_env('ARTIFACTS_BASE', RESULTS_BASE / 'artifacts'))
 RUN_ID = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 RUN_ARTIFACTS_DIR = ARTIFACTS_BASE / f'run_{RUN_ID}'
 DEFAULT_CHECKPOINT_PATH = (
     RESULTS_BASE / 'checkpoints' / 'baselines' / 'pxddi_ecfp_sgd_logistic.npz'
 )
-CHECKPOINT_PATH = Path(os.environ.get('PXDDI_CHECKPOINT_PATH', DEFAULT_CHECKPOINT_PATH))
+CHECKPOINT_PATH = Path(get_auditddi_env('CHECKPOINT_PATH', DEFAULT_CHECKPOINT_PATH))
 
 
 def _json_default(value: Any) -> Any:
@@ -342,6 +351,8 @@ def baseline_manifest() -> dict[str, Any]:
 
 
 def main() -> None:
+    if DATA_BASE_RESOLUTION_ERROR is not None:
+        raise DATA_BASE_RESOLUTION_ERROR
     # This shared audit deliberately gives the baseline and GNN identical clean
     # positives before the deterministic negative sampling and cold-start split.
     RUN_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=False)

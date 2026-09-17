@@ -601,6 +601,8 @@ def main() -> None:
             checkpoint_path = run_root / 'checkpoints' / f"{experiment['name']}_seed_{seed}{checkpoint_suffix}"
             environment = os.environ.copy()
             for key_suffix, val in [
+                ('DATA_BASE', str(DRIVE_BASE)),
+                ('RESULTS_BASE', str(resolve_results_base())),
                 ('SEED', str(seed)),
                 ('MODEL_SEED', str(seed)),
                 ('SPLIT_SEED', str(EXPERIMENT_SPLIT_SEED)),
