@@ -14,7 +14,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from data_prep.prepare_twosides import smiles_to_graph
-from models.ddi_model import AuditDDIModel, AuditDDIModel
+from models.ddi_model import AuditDDIModel
 
 
 CHECKPOINT_PATH = PROJECT_ROOT / 'backend' / 'checkpoints' / 'auditddi_model.pt'
@@ -32,6 +32,8 @@ TEST_PAIRS = [
 
 @pytest.fixture(scope='module')
 def model():
+    if not CHECKPOINT_PATH.is_file():
+        pytest.skip(f"Shipped model checkpoint not found at {CHECKPOINT_PATH}")
     checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=True)
     loaded_model = AuditDDIModel(
         in_channels=checkpoint['in_channels'],
@@ -62,3 +64,21 @@ def test_shipped_model_is_order_independent(model, smiles_a, smiles_b):
         torch.sigmoid(risk_ab).item() - torch.sigmoid(risk_ba).item()
     )
     assert difference < 1e-6, f'Model is order-sensitive: diff={difference:.8f}'
+
+
+@pytest.mark.parametrize(('smiles_a', 'smiles_b'), TEST_PAIRS)
+def test_initialized_model_is_order_independent(smiles_a, smiles_b):
+    """Pair architecture must produce identical scores regardless of drug argument order."""
+    graph_a = smiles_to_graph(smiles_a)
+    graph_b = smiles_to_graph(smiles_b)
+    assert graph_a is not None and graph_b is not None
+    assert graph_a.x is not None
+    init_model = AuditDDIModel(in_channels=graph_a.x.size(-1), hidden_channels=16).eval()
+    batch_a = Batch.from_data_list([graph_a])
+    batch_b = Batch.from_data_list([graph_b])
+    with torch.no_grad():
+        risk_ab, _, _ = init_model(batch_a, batch_b)
+        risk_ba, _, _ = init_model(batch_b, batch_a)
+    diff = abs(torch.sigmoid(risk_ab).item() - torch.sigmoid(risk_ba).item())
+    assert diff < 1e-6, f'Initialized model is order-sensitive: diff={diff:.8f}'
+
