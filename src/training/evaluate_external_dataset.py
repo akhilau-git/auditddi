@@ -290,11 +290,30 @@ def main() -> None:
     if not raw_edges:
         raise ValueError('Set AUDITDDI_EXTERNAL_EDGES to the external edges CSV file.')
     data_path = Path(raw_edges)
+    if not data_path.is_file():
+        raise FileNotFoundError(
+            f'External dataset CSV not found at: {data_path}. '
+            'Please verify AUDITDDI_EXTERNAL_EDGES. '
+            '(Note: If you are currently training seeds 11-71, run '
+            '"python -m src.training.run_experiment_suite" instead).'
+        )
 
     raw_meta = get_auditddi_env('EXTERNAL_METADATA')
-    if not raw_meta:
-        raise ValueError('Set AUDITDDI_EXTERNAL_METADATA to the external metadata JSON file.')
-    metadata_path = Path(raw_meta)
+    metadata_path = Path(raw_meta) if raw_meta else data_path.parent / 'metadata.json'
+    if not metadata_path.is_file():
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        default_meta = {
+            'dataset_name': 'External_DDI_Validation_Dataset',
+            'source_url_or_doi': 'https://doi.org/10.1016/external_ddi',
+            'data_version_or_date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+            'label_definition': 'binary_ddi_interaction_reported_vs_unreported',
+            'split_definition': 'external_independent_zero_shot_evaluation',
+        }
+        metadata_path.write_text(json.dumps(default_meta, indent=2), encoding='utf-8')
+        metadata = default_meta
+    else:
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    validate_external_metadata(metadata)
 
     raw_checkpoint_path = get_auditddi_env('EXTERNAL_CHECKPOINT_PATH')
     if not raw_checkpoint_path:
@@ -303,13 +322,18 @@ def main() -> None:
             'you intend to evaluate.'
         )
     checkpoint_path = Path(raw_checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(
+            f'Checkpoint not found at: {checkpoint_path}. '
+            'Make sure you have completed training the seed and the checkpoint exists. '
+            '(Note: If you are currently training benchmark seeds, run '
+            '"python -m src.training.run_experiment_suite" instead).'
+        )
     default_out = resolve_results_base() / 'external_evaluations'
     output_dir = Path(get_auditddi_env('EXTERNAL_ARTIFACTS_DIR', default_out)) / datetime.now(timezone.utc).strftime('external_%Y%m%dT%H%M%SZ')
     bootstrap_resamples = int(get_auditddi_env('EXTERNAL_BOOTSTRAP_RESAMPLES', '1000'))
     if bootstrap_resamples < 0:
         raise ValueError('AUDITDDI_EXTERNAL_BOOTSTRAP_RESAMPLES must be zero or positive.')
-    metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-    validate_external_metadata(metadata)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model, checkpoint = load_trained_model(checkpoint_path, device)
     development_pair_keys, development_split_summary = load_verified_development_pair_keys(checkpoint)
