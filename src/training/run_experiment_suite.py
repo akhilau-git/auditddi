@@ -399,6 +399,71 @@ def find_completed_run(artifact_base: Path) -> Path:
     return runs[0]
 
 
+def discover_completed_study_runs(
+    study_dir: Path,
+    experiment_names: set[str],
+) -> dict[tuple[str, int], Path]:
+    """Return every completed requested run already present in a study.
+
+    A Colab session can stop after one seed and be resumed later. Earlier
+    versions rebuilt the study CSV from only the current seed batch, silently
+    dropping valid earlier seed rows from the aggregate summary. Discovering
+    artifacts first makes a study id safely resumable.
+    """
+    discovered: dict[tuple[str, int], Path] = {}
+    for experiment_dir in (study_dir.iterdir() if study_dir.is_dir() else ()):
+        if not experiment_dir.is_dir() or experiment_dir.name not in experiment_names:
+            continue
+        for seed_dir in experiment_dir.glob('seed_*'):
+            if not seed_dir.is_dir():
+                continue
+            try:
+                seed = int(seed_dir.name.removeprefix('seed_'))
+            except ValueError:
+                continue
+            discovered[(experiment_dir.name, seed)] = find_completed_run(seed_dir / 'artifacts')
+    return discovered
+
+
+def merge_study_plan(
+    existing: dict[str, Any] | None,
+    *,
+    study_id: str,
+    seeds: list[int],
+    epochs: int,
+    experiments: tuple[dict[str, Any], ...],
+    reference_experiment: str,
+    experiments_base: Path,
+) -> dict[str, Any]:
+    """Preserve earlier requested seeds/configurations when resuming a study."""
+    existing = existing or {}
+    previous_seeds = [int(seed) for seed in existing.get('requested_seeds', existing.get('seeds', []))]
+    requested_seeds = list(dict.fromkeys([*previous_seeds, *seeds]))
+    prior_experiments = {
+        item['name']: item for item in existing.get('experiments', [])
+        if isinstance(item, dict) and isinstance(item.get('name'), str)
+    }
+    prior_experiments.update({item['name']: item for item in experiments})
+    return {
+        'study_id': study_id,
+        'preset': PRESET,
+        'input_data_base': str(DRIVE_BASE),
+        'experiments_base': str(experiments_base),
+        'seeds': requested_seeds,
+        'requested_seeds': requested_seeds,
+        'current_invocation_seeds': seeds,
+        'fixed_split_seed': EXPERIMENT_SPLIT_SEED,
+        'negative_sampling_protocol': EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL,
+        'epochs_per_run': epochs,
+        'experiments': list(prior_experiments.values()),
+        'reference_experiment': reference_experiment,
+        'promotion_policy': (
+            'No candidate is promoted to checkpoints/pxddi_model.pt by this suite. '
+            'Review S1/S2, calibration, and repeated-seed results first.'
+        ),
+    }
+
+
 def collect_metric_rows(experiment_name: str, seed: int, run_dir: Path) -> list[dict[str, Any]]:
     manifest = json.loads((run_dir / 'run_manifest.json').read_text(encoding='utf-8'))
     split_signature = split_manifest_signature(manifest)
@@ -413,6 +478,7 @@ def collect_metric_rows(experiment_name: str, seed: int, run_dir: Path) -> list[
             'split': split_name,
             'run_directory': str(run_dir),
             'checkpoint_sha256': manifest['checkpoint']['sha256'],
+            'repository_git_commit': manifest.get('repository_git_commit'),
             'twosides_input_sha256': input_hash,
             'split_manifest_signature': split_signature,
             'negative_label_meaning': manifest['configuration']['negative_label_meaning'],
@@ -435,6 +501,7 @@ def validate_study_comparability(table: pd.DataFrame) -> None:
     required = {
         'experiment', 'seed', 'split', 'twosides_input_sha256',
         'split_manifest_signature', 'negative_label_meaning', 'negative_sampling_protocol',
+        'repository_git_commit',
     }
     missing = required.difference(table.columns)
     if missing:
@@ -445,13 +512,13 @@ def validate_study_comparability(table: pd.DataFrame) -> None:
     for seed, seed_rows in table.groupby('seed'):
         for column in (
             'twosides_input_sha256', 'split_manifest_signature', 'negative_label_meaning',
-            'negative_sampling_protocol',
+            'negative_sampling_protocol', 'repository_git_commit',
         ):
             values = seed_rows[column].dropna().unique()
             if len(values) != 1:
                 raise ValueError(
                     f'Experiment comparisons for seed {seed} are invalid: {column} differs '
-                    'between configurations.'
+                    'between configurations or is missing.'
                 )
 
 
@@ -568,24 +635,19 @@ def main() -> None:
     experiments_base = resolve_experiments_base()
     study_dir = experiments_base / study_id
     study_dir.mkdir(parents=True, exist_ok=True)
-    write_json(study_dir / 'study_plan.json', {
-        'study_id': study_id,
-        'preset': PRESET,
-        'input_data_base': str(DRIVE_BASE),
-        'experiments_base': str(experiments_base),
-        'seeds': seeds,
-        'fixed_split_seed': EXPERIMENT_SPLIT_SEED,
-        'negative_sampling_protocol': EXPERIMENT_NEGATIVE_SAMPLING_PROTOCOL,
-        'epochs_per_run': epochs,
-        'experiments': experiments,
-        'reference_experiment': reference_experiment,
-        'promotion_policy': (
-            'No candidate is promoted to checkpoints/pxddi_model.pt by this suite. '
-            'Review S1/S2, calibration, and repeated-seed results first.'
-        ),
-    })
+    plan_path = study_dir / 'study_plan.json'
+    existing_plan = json.loads(plan_path.read_text(encoding='utf-8')) if plan_path.is_file() else None
+    write_json(plan_path, merge_study_plan(
+        existing_plan,
+        study_id=study_id,
+        seeds=seeds,
+        epochs=epochs,
+        experiments=experiments,
+        reference_experiment=reference_experiment,
+        experiments_base=experiments_base,
+    ))
 
-    rows: list[dict[str, Any]] = []
+    completed_runs = discover_completed_study_runs(study_dir, experiment_names)
     for experiment in experiments:
         for seed in seeds:
             run_root = study_dir / experiment['name'] / f'seed_{seed}'
@@ -593,7 +655,7 @@ def main() -> None:
             try:
                 run_dir = find_completed_run(artifact_base)
                 print(f"Skipping {experiment['name']} seed={seed}; already completed at {run_dir}")
-                rows.extend(collect_metric_rows(experiment['name'], seed, run_dir))
+                completed_runs[(experiment['name'], seed)] = run_dir
                 continue
             except FileNotFoundError:
                 pass
@@ -640,7 +702,11 @@ def main() -> None:
             print(f"Running {experiment['name']} seed={seed}; checkpoint={checkpoint_path}")
             subprocess.run([sys.executable, str(training_script)], check=True, env=environment)
             run_dir = find_completed_run(artifact_base)
-            rows.extend(collect_metric_rows(experiment['name'], seed, run_dir))
+            completed_runs[(experiment['name'], seed)] = run_dir
+
+    rows: list[dict[str, Any]] = []
+    for (experiment_name, seed), run_dir in sorted(completed_runs.items()):
+        rows.extend(collect_metric_rows(experiment_name, seed, run_dir))
 
     table = pd.DataFrame(rows)
     # Only enforce cross-model comparability when more than one experiment is run.

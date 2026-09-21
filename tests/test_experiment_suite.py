@@ -5,7 +5,9 @@ import pytest
 
 from src.training.run_experiment_suite import (
     bootstrap_mean_confidence_interval,
+    discover_completed_study_runs,
     holm_adjust_p_values,
+    merge_study_plan,
     paired_bootstrap_difference_confidence_interval,
     paired_comparison_summary,
     paired_wilcoxon_signed_rank_test,
@@ -96,12 +98,14 @@ def test_study_comparability_rejects_models_with_different_splits():
             'twosides_input_sha256': 'same', 'split_manifest_signature': 'split_a',
             'negative_label_meaning': 'unreported_twosides_sampled',
             'negative_sampling_protocol': 'split_aware_standard_v1',
+            'repository_git_commit': 'same_commit',
         },
         {
             'experiment': 'candidate', 'seed': 42, 'split': 'S1',
             'twosides_input_sha256': 'same', 'split_manifest_signature': 'split_b',
             'negative_label_meaning': 'unreported_twosides_sampled',
             'negative_sampling_protocol': 'split_aware_standard_v1',
+            'repository_git_commit': 'same_commit',
         },
     ])
 
@@ -193,3 +197,39 @@ def test_experiment_outputs_can_be_separated_from_the_read_only_data_root(tmp_pa
     )
 
     assert resolved == writable_output_root
+
+
+def test_incremental_study_plan_preserves_prior_seed_batches(tmp_path):
+    previous = {
+        'seeds': [11, 23],
+        'experiments': [{'name': 'legacy_gat_ddi_only', 'architecture': 'legacy_gat_v1'}],
+    }
+    plan = merge_study_plan(
+        previous,
+        study_id='paper_benchmark',
+        seeds=[37, 53],
+        epochs=200,
+        experiments=({'name': 'edge_aware_ddi_only', 'architecture': 'edge_aware_gat_v2'},),
+        reference_experiment='legacy_gat_ddi_only',
+        experiments_base=tmp_path,
+    )
+
+    assert plan['requested_seeds'] == [11, 23, 37, 53]
+    assert [item['name'] for item in plan['experiments']] == [
+        'legacy_gat_ddi_only', 'edge_aware_ddi_only'
+    ]
+
+
+def test_discover_completed_study_runs_keeps_prior_seed_artifacts(tmp_path):
+    first = tmp_path / 'edge_aware_ddi_only' / 'seed_11' / 'artifacts' / 'run_first'
+    second = tmp_path / 'edge_aware_ddi_only' / 'seed_23' / 'artifacts' / 'run_second'
+    for path in (first, second):
+        path.mkdir(parents=True)
+        (path / 'run_manifest.json').write_text('{}', encoding='utf-8')
+
+    discovered = discover_completed_study_runs(tmp_path, {'edge_aware_ddi_only'})
+
+    assert discovered == {
+        ('edge_aware_ddi_only', 11): first,
+        ('edge_aware_ddi_only', 23): second,
+    }

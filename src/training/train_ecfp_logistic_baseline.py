@@ -48,6 +48,7 @@ from training.train_full_pipeline_v2 import (
     partition_validation_for_model_selection,
     partition_validation_for_posthoc,
     posthoc_validation_partition_summary,
+    repository_git_commit,
     save_split_manifests,
     save_training_history,
     select_validation_threshold,
@@ -315,6 +316,9 @@ def baseline_manifest() -> dict[str, Any]:
     return {
         'run_id': RUN_ID,
         'created_at_utc': datetime.now(timezone.utc).isoformat(),
+        # The GNN runner already records this. The classical baseline must
+        # carry the same provenance for a fair paper comparison.
+        'repository_git_commit': repository_git_commit(),
         'random_seed': MODEL_SEED,
         'model_seed': MODEL_SEED,
         'split_seed': SPLIT_SEED,
