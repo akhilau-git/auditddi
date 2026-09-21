@@ -246,6 +246,41 @@ def selected_experiments(requested_names: str | None = None) -> tuple[dict[str, 
     return tuple(by_name[name] for name in names)
 
 
+def resolve_reference_experiment(
+    experiments: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    configured_reference: str | None = None,
+) -> str:
+    """Resolve reference experiment for paired comparisons and study plan.
+
+    If an explicit reference is configured (via parameter or environment variable
+    ``AUDITDDI_EXPERIMENT_REFERENCE`` / ``PXDDI_EXPERIMENT_REFERENCE``), it must match
+    one of the selected experiments.
+
+    Otherwise (when no reference is explicitly configured):
+    - If 'legacy_gat_ddi_only' is selected, it is used as the default reference.
+    - Otherwise, falls back to the first selected experiment (e.g. during candidate
+      screening runs where the baseline is not included).
+    """
+    experiment_names = [experiment['name'] for experiment in experiments]
+    if not experiment_names:
+        raise ValueError('At least one experiment must be selected.')
+
+    raw_env_ref = get_auditddi_env('EXPERIMENT_REFERENCE')
+    raw_configured = configured_reference if configured_reference is not None else raw_env_ref
+    if raw_configured is not None and str(raw_configured).strip():
+        ref = str(raw_configured).strip()
+        if ref not in experiment_names:
+            raise ValueError(
+                f'AUDITDDI_EXPERIMENT_REFERENCE={ref!r} is not selected. '
+                f'Selected experiments: {sorted(experiment_names)}.'
+            )
+        return ref
+
+    if 'legacy_gat_ddi_only' in experiment_names:
+        return 'legacy_gat_ddi_only'
+    return experiment_names[0]
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
@@ -619,15 +654,7 @@ def main() -> None:
     seeds, epochs = experiment_settings()
     experiments = selected_experiments()
     experiment_names = {experiment['name'] for experiment in experiments}
-    reference_experiment = REFERENCE_EXPERIMENT
-    if reference_experiment not in experiment_names:
-        if len(experiments) == 1:
-            reference_experiment = experiments[0]['name']
-        else:
-            raise ValueError(
-                f'PXDDI_EXPERIMENT_REFERENCE={reference_experiment!r} is not selected. '
-                f'Selected experiments: {sorted(experiment_names)}.'
-            )
+    reference_experiment = resolve_reference_experiment(experiments)
     study_id = str(get_auditddi_env(
         'STUDY_ID',
         datetime.now(timezone.utc).strftime('study_%Y%m%dT%H%M%SZ'),

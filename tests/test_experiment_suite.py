@@ -12,6 +12,7 @@ from src.training.run_experiment_suite import (
     paired_comparison_summary,
     paired_wilcoxon_signed_rank_test,
     resolve_experiments_base,
+    resolve_reference_experiment,
     selected_experiments,
     split_manifest_signature,
     validate_study_comparability,
@@ -233,3 +234,41 @@ def test_discover_completed_study_runs_keeps_prior_seed_artifacts(tmp_path):
         ('edge_aware_ddi_only', 11): first,
         ('edge_aware_ddi_only', 23): second,
     }
+
+
+def test_resolve_reference_experiment_defaults_to_legacy_gat_when_present():
+    experiments = [
+        {'name': 'edge_aware_multitask'},
+        {'name': 'legacy_gat_ddi_only'},
+        {'name': 'graph_fp_fusion_multitask'},
+    ]
+    assert resolve_reference_experiment(experiments) == 'legacy_gat_ddi_only'
+
+
+def test_resolve_reference_experiment_falls_back_to_first_when_legacy_not_in_screening_subset():
+    experiments = [
+        {'name': 'edge_aware_multitask'},
+        {'name': 'graph_fp_fusion_multitask'},
+        {'name': 'cross_attention_edge_aware_multitask'},
+    ]
+    assert resolve_reference_experiment(experiments) == 'edge_aware_multitask'
+
+
+def test_resolve_reference_experiment_respects_explicit_configuration():
+    experiments = [
+        {'name': 'edge_aware_multitask'},
+        {'name': 'graph_fp_fusion_multitask'},
+    ]
+    assert resolve_reference_experiment(
+        experiments, configured_reference='graph_fp_fusion_multitask'
+    ) == 'graph_fp_fusion_multitask'
+
+
+def test_resolve_reference_experiment_rejects_missing_explicit_configuration():
+    experiments = [
+        {'name': 'edge_aware_multitask'},
+        {'name': 'graph_fp_fusion_multitask'},
+    ]
+    with pytest.raises(ValueError, match='AUDITDDI_EXPERIMENT_REFERENCE'):
+        resolve_reference_experiment(experiments, configured_reference='unknown_model')
+
