@@ -456,7 +456,10 @@ def discover_completed_study_runs(
                 seed = int(seed_dir.name.removeprefix('seed_'))
             except ValueError:
                 continue
-            discovered[(experiment_dir.name, seed)] = find_completed_run(seed_dir / 'artifacts')
+            try:
+                discovered[(experiment_dir.name, seed)] = find_completed_run(seed_dir / 'artifacts')
+            except FileNotFoundError:
+                continue
     return discovered
 
 

@@ -236,6 +236,22 @@ def test_discover_completed_study_runs_keeps_prior_seed_artifacts(tmp_path):
     }
 
 
+def test_discover_completed_study_runs_ignores_partial_runs(tmp_path):
+    completed = tmp_path / 'edge_aware_ddi_only' / 'seed_11' / 'artifacts' / 'run_first'
+    completed.mkdir(parents=True)
+    (completed / 'run_manifest.json').write_text('{}', encoding='utf-8')
+
+    partial = tmp_path / 'edge_aware_ddi_only' / 'seed_23' / 'artifacts'
+    partial.mkdir(parents=True)
+
+    discovered = discover_completed_study_runs(tmp_path, {'edge_aware_ddi_only'})
+
+    assert discovered == {
+        ('edge_aware_ddi_only', 11): completed,
+    }
+
+
+
 def test_resolve_reference_experiment_defaults_to_legacy_gat_when_present(monkeypatch):
     monkeypatch.delenv('AUDITDDI_EXPERIMENT_REFERENCE', raising=False)
     monkeypatch.delenv('PXDDI_EXPERIMENT_REFERENCE', raising=False)
