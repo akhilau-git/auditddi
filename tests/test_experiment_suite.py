@@ -236,7 +236,9 @@ def test_discover_completed_study_runs_keeps_prior_seed_artifacts(tmp_path):
     }
 
 
-def test_resolve_reference_experiment_defaults_to_legacy_gat_when_present():
+def test_resolve_reference_experiment_defaults_to_legacy_gat_when_present(monkeypatch):
+    monkeypatch.delenv('AUDITDDI_EXPERIMENT_REFERENCE', raising=False)
+    monkeypatch.delenv('PXDDI_EXPERIMENT_REFERENCE', raising=False)
     experiments = [
         {'name': 'edge_aware_multitask'},
         {'name': 'legacy_gat_ddi_only'},
@@ -245,7 +247,9 @@ def test_resolve_reference_experiment_defaults_to_legacy_gat_when_present():
     assert resolve_reference_experiment(experiments) == 'legacy_gat_ddi_only'
 
 
-def test_resolve_reference_experiment_falls_back_to_first_when_legacy_not_in_screening_subset():
+def test_resolve_reference_experiment_falls_back_to_first_when_legacy_not_in_screening_subset(monkeypatch):
+    monkeypatch.delenv('AUDITDDI_EXPERIMENT_REFERENCE', raising=False)
+    monkeypatch.delenv('PXDDI_EXPERIMENT_REFERENCE', raising=False)
     experiments = [
         {'name': 'edge_aware_multitask'},
         {'name': 'graph_fp_fusion_multitask'},
@@ -254,7 +258,9 @@ def test_resolve_reference_experiment_falls_back_to_first_when_legacy_not_in_scr
     assert resolve_reference_experiment(experiments) == 'edge_aware_multitask'
 
 
-def test_resolve_reference_experiment_respects_explicit_configuration():
+def test_resolve_reference_experiment_respects_explicit_configuration(monkeypatch):
+    monkeypatch.delenv('AUDITDDI_EXPERIMENT_REFERENCE', raising=False)
+    monkeypatch.delenv('PXDDI_EXPERIMENT_REFERENCE', raising=False)
     experiments = [
         {'name': 'edge_aware_multitask'},
         {'name': 'graph_fp_fusion_multitask'},
@@ -264,7 +270,18 @@ def test_resolve_reference_experiment_respects_explicit_configuration():
     ) == 'graph_fp_fusion_multitask'
 
 
-def test_resolve_reference_experiment_rejects_missing_explicit_configuration():
+def test_resolve_reference_experiment_respects_environment_variable(monkeypatch):
+    monkeypatch.setenv('AUDITDDI_EXPERIMENT_REFERENCE', 'graph_fp_fusion_multitask')
+    experiments = [
+        {'name': 'edge_aware_multitask'},
+        {'name': 'graph_fp_fusion_multitask'},
+    ]
+    assert resolve_reference_experiment(experiments) == 'graph_fp_fusion_multitask'
+
+
+def test_resolve_reference_experiment_rejects_missing_explicit_configuration(monkeypatch):
+    monkeypatch.delenv('AUDITDDI_EXPERIMENT_REFERENCE', raising=False)
+    monkeypatch.delenv('PXDDI_EXPERIMENT_REFERENCE', raising=False)
     experiments = [
         {'name': 'edge_aware_multitask'},
         {'name': 'graph_fp_fusion_multitask'},
