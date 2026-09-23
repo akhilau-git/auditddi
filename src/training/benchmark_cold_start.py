@@ -131,16 +131,13 @@ def _map_edges_to_master_ids(
         if not node_id or node_id.lower() == 'nan':
             continue
         aliases = {node_id}
-        if 'canonical_smiles' in nodes.columns:
-            aliases.update(_collect_aliases(row['canonical_smiles']))
-        for alias in aliases:
-            alias_to_ids.setdefault(alias, set()).add(node_id)
         for col in alias_cols:
-            if col in {node_id_col, 'canonical_smiles'}:
-                continue
             for alias in _collect_aliases(row[col]):
+                aliases.add(alias)
                 for key in external_alias_keys(alias):
                     folded_alias_to_ids.setdefault(key, set()).add(node_id)
+        for alias in aliases:
+            alias_to_ids.setdefault(alias, set()).add(node_id)
 
     unambiguous = {
         alias: next(iter(node_ids))
@@ -152,24 +149,71 @@ def _map_edges_to_master_ids(
         for alias, node_ids in folded_alias_to_ids.items()
         if len(node_ids) == 1
     }
+
+    endpoint_cache: dict[str, str | None] = {}
+
     def resolve_endpoint(value: Any) -> str | None:
         text = str(value).strip()
+        if not text or text.lower() in {'nan', 'none', 'null'}:
+            return None
+        if text in endpoint_cache:
+            return endpoint_cache[text]
+
+        # 1. Exact string match against known aliases
         if text in unambiguous:
-            return unambiguous[text]
+            resolved = unambiguous[text]
+            endpoint_cache[text] = resolved
+            return resolved
+
+        # 2. Casefolded / normalized external alias keys (PubChem CID, DrugBank, synonyms)
         matched_ids = {
             folded_unambiguous[key]
             for key in external_alias_keys(text)
             if key in folded_unambiguous
         }
-        return next(iter(matched_ids)) if len(matched_ids) == 1 else None
+        if len(matched_ids) == 1:
+            resolved = next(iter(matched_ids))
+            endpoint_cache[text] = resolved
+            return resolved
+
+        # 3. Chemical structure normalization via RDKit (handles raw SMILES, kekule forms, InChIKey)
+        try:
+            from rdkit import Chem, rdBase
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(text)
+            if mol is not None:
+                can = Chem.MolToSmiles(mol, canonical=True)
+                if can in unambiguous:
+                    endpoint_cache[text] = unambiguous[can]
+                    return unambiguous[can]
+                if can.casefold() in folded_unambiguous:
+                    resolved = folded_unambiguous[can.casefold()]
+                    endpoint_cache[text] = resolved
+                    return resolved
+                try:
+                    ikey = Chem.MolToInchiKey(mol)
+                    if ikey in unambiguous:
+                        endpoint_cache[text] = unambiguous[ikey]
+                        return unambiguous[ikey]
+                    if ikey.casefold() in folded_unambiguous:
+                        resolved = folded_unambiguous[ikey.casefold()]
+                        endpoint_cache[text] = resolved
+                        return resolved
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        endpoint_cache[text] = None
+        return None
 
     mapped_a = pairs[source_col].map(resolve_endpoint)
     mapped_b = pairs[target_col].map(resolve_endpoint)
-    matched = mapped_a.notna() & mapped_b.notna()
+    matched = mapped_a.notna() & mapped_b.notna() & (mapped_a != mapped_b)
     result = pd.DataFrame({
         'drug_a_id': mapped_a[matched].values,
         'drug_b_id': mapped_b[matched].values,
-    })
+    }).drop_duplicates().reset_index(drop=True)
     audit = {
         'master_node_rows': int(len(nodes)),
         'unambiguous_aliases': int(len(unambiguous) + len(folded_unambiguous)),
