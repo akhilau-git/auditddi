@@ -60,10 +60,10 @@ def main() -> None:
         )
 
     edges = args.edges or _first_existing([
-        data_base / 'twosides' / 'drug_drug_edges.csv',
-        data_base / 'TWOSIDES' / 'drug_drug_edges.csv',
         results_base / 'unified_graph' / 'master_ddi_edges.csv',
         data_base / 'unified_graph' / 'master_ddi_edges.csv',
+        data_base / 'twosides' / 'drug_drug_edges.csv',
+        data_base / 'TWOSIDES' / 'drug_drug_edges.csv',
     ])
     if edges is None or not edges.is_file():
         raise FileNotFoundError(

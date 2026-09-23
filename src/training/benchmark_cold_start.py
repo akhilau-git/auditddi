@@ -166,14 +166,19 @@ def ensure_benchmark_splits(
     # If master nodes given, filter pairs to registered nodes only
     if master_nodes_path is not None and Path(master_nodes_path).is_file():
         nodes_df = pd.read_csv(master_nodes_path)
-        node_id_col = 'drug_id' if 'drug_id' in nodes_df.columns else (
-            'canonical_smiles' if 'canonical_smiles' in nodes_df.columns else nodes_df.columns[0]
-        )
-        valid_nodes = set(nodes_df[node_id_col].astype(str).str.strip())
+        valid_nodes: set[str] = set()
+        for col in ('drug_id', 'canonical_smiles', 'inchikey', 'drug_name', 'pubchem_cid'):
+            if col in nodes_df.columns:
+                valid_nodes.update(nodes_df[col].dropna().astype(str).str.strip())
+        if not valid_nodes:
+            valid_nodes = set(nodes_df.iloc[:, 0].dropna().astype(str).str.strip())
+        before_cnt = len(pairs_df)
         pairs_df = pairs_df[
             pairs_df['drug_a_id'].astype(str).str.strip().isin(valid_nodes)
             & pairs_df['drug_b_id'].astype(str).str.strip().isin(valid_nodes)
         ].reset_index(drop=True)
+        if len(pairs_df) < before_cnt:
+            print(f"Filtered pairs against master nodes: {len(pairs_df):,} of {before_cnt:,} pairs retained.")
 
     print(f"Constructing leakage-safe splits across {len(pairs_df):,} unique positive drug pairs...")
     splits, audit = create_split_aware_binary_splits(
