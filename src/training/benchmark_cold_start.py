@@ -58,6 +58,8 @@ REQUIRED_SPLIT_FILES = [
     'transductive_train.csv',
     'validation.csv',
     'transductive_test.csv',
+    's1_dev.csv',
+    's2_dev.csv',
     's1_test.csv',
     's2_test.csv',
 ]

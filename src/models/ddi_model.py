@@ -203,7 +203,7 @@ class AuditDDIModel(nn.Module):
         use_neighbor_memory=False,
         gene_feature_dim=50,
         gene_hidden_channels=64,
-        use_clinical_toxicity=False,
+        use_clinical_toxicity=None,
         num_side_effects=1,
         use_cross_modal_attention=False,
         **kwargs,
@@ -220,10 +220,13 @@ class AuditDDIModel(nn.Module):
         self.embedding_noise_std = float(kwargs.get('embedding_noise_std', 0.0))
         if 'use_clinical_toxicity' in kwargs:
             self.use_clinical_toxicity = bool(kwargs['use_clinical_toxicity'])
+        elif use_clinical_toxicity is not None:
+            self.use_clinical_toxicity = bool(use_clinical_toxicity)
         else:
-            self.use_clinical_toxicity = use_clinical_toxicity or (
-                architecture_version in {MODEL_ARCHITECTURE_MULTIMODAL, MODEL_ARCHITECTURE_ABLATION_FAERS}
-            )
+            self.use_clinical_toxicity = architecture_version in {
+                MODEL_ARCHITECTURE_MULTIMODAL,
+                MODEL_ARCHITECTURE_ABLATION_FAERS,
+            }
 
         if use_chemberta:
             from .encoder import MolecularEncoderChemBERTa
@@ -945,7 +948,7 @@ class AuditDDIModel(nn.Module):
                 inductive_feats.append(torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype))
 
             # 6. FAERS Adverse Event Severity Product
-            if clinical_tox_a is not None and clinical_tox_b is not None:
+            if self.use_clinical_toxicity and clinical_tox_a is not None and clinical_tox_b is not None:
                 inductive_feats.append(clinical_tox_a.float().view(batch_sz, 1) * clinical_tox_b.float().view(batch_sz, 1))
             else:
                 inductive_feats.append(torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype))

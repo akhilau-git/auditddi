@@ -35,6 +35,8 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import importlib
+import hashlib
+import random
 import src.data_prep.cached_graph_loader as _cgl_mod
 try:
     importlib.reload(_cgl_mod)
@@ -66,13 +68,11 @@ from src.models.calibration import (
     fit_platt_calibrator,
 )
 from src.models.ddi_model import (
-    MODEL_ARCHITECTURE_ABLATION_FAERS,
     MODEL_ARCHITECTURE_ABLATION_GENES,
     MODEL_ARCHITECTURE_EDGE_AWARE,
     MODEL_ARCHITECTURE_MULTIMODAL,
     AuditDDIModel,
     PxDDIModel,
-    model_from_checkpoint,
 )
 from src.training.benchmark_cold_start import (
     ensure_benchmark_splits,
@@ -194,6 +194,7 @@ def train_extended_multimodal(
     val_df: pd.DataFrame,
     test_splits: dict[str, pd.DataFrame],
     output_dir: str | Path,
+    cold_dev_splits: dict[str, pd.DataFrame] | None = None,
     epochs: int = 15,
     batch_size: int = 64,
     learning_rate: float = 3e-4,
@@ -204,6 +205,7 @@ def train_extended_multimodal(
     use_cross_modal_attention: bool = True,
     use_cross_drug_attention: bool = False,
     use_target_encoder: bool = True,
+    use_faers_features: bool = False,
     use_neighbor_memory: bool = False,
     select_best_by: str = 'val',
     pos_weight: float = 2.2,
@@ -217,6 +219,18 @@ def train_extended_multimodal(
     **kwargs: Any,
 ) -> tuple[AuditDDIModel, pd.DataFrame, dict[str, Any]]:
     """Train the multimodal model across extended epochs with checkpointing."""
+    if chembl_pretrained_path is not None:
+        raise ValueError(
+            'This multimodal benchmark uses a different split builder than the audited '
+            'ChEMBL pretraining contract. Do not load that checkpoint here; evaluate '
+            'ChEMBL with src/training/run_experiment_suite.py, which validates split provenance.'
+        )
+    if use_faers_features:
+        raise ValueError(
+            'FAERS inputs are disabled for DDI prediction because the current toxicity '
+            'bridge has no verified as-of date. Add a time-filtered FAERS bridge and '
+            'overlap audit before enabling this feature.'
+        )
     if select_best_by == 's1':
         print("⚠️ Audit Notice: 'select_best_by=s1' selects models using S1 test split (test data leakage). "
               "AuditDDI policy requires model selection and early stopping on validation/dev split. "
@@ -250,18 +264,20 @@ def train_extended_multimodal(
 
     # Semi-Supervised Learning (SSL) on unobserved non-test drug pairs
     ssl_loader = None
+    source_col = 'drug_a_id' if 'drug_a_id' in train_df.columns else ('source' if 'source' in train_df.columns else train_df.columns[0])
+    target_col = 'drug_b_id' if 'drug_b_id' in train_df.columns else ('target' if 'target' in train_df.columns else train_df.columns[1])
+    training_drugs = set(train_df[source_col].astype(str)) | set(train_df[target_col].astype(str))
     if use_ssl and is_multimodal:
         try:
             known_pairs: set[tuple[str, str]] = set()
-            for df_split in [train_df, val_df] + list(test_splits.values()):
-                s_col = 'drug_a_id' if 'drug_a_id' in df_split.columns else ('source' if 'source' in df_split.columns else df_split.columns[0])
-                t_col = 'drug_b_id' if 'drug_b_id' in df_split.columns else ('target' if 'target' in df_split.columns else df_split.columns[1])
-                for _, r in df_split.iterrows():
-                    sa, sb = str(r[s_col]).strip(), str(r[t_col]).strip()
-                    known_pairs.add((sa, sb))
-                    known_pairs.add((sb, sa))
+            # Pseudo-label pair generation is restricted to training identities;
+            # validation/test rows and held-out drug identities are never read.
+            for _, r in train_df.iterrows():
+                sa, sb = str(r[source_col]).strip(), str(r[target_col]).strip()
+                known_pairs.add((sa, sb))
+                known_pairs.add((sb, sa))
 
-            valid_drugs = [s for s in cache.graphs.keys() if s in cache.fingerprints]
+            valid_drugs = [s for s in training_drugs if s in cache.graphs and s in cache.fingerprints]
             if len(valid_drugs) >= 10:
                 rng = np.random.RandomState(42)
                 ssl_pairs: list[dict[str, Any]] = []
@@ -288,24 +304,6 @@ def train_extended_multimodal(
     edge_dim = sample_batch['drug_a'].edge_attr.size(1)
 
     hidden_dim = int(kwargs.get('hidden_dim', 64))
-    if chembl_pretrained_path and Path(chembl_pretrained_path).is_file():
-        try:
-            bundle_meta = torch.load(chembl_pretrained_path, map_location='cpu', weights_only=False)
-            if isinstance(bundle_meta, dict):
-                if 'encoder_configuration' in bundle_meta:
-                    hidden_dim = int(bundle_meta['encoder_configuration'].get('hidden_channels', hidden_dim))
-                elif 'hyperparameters' in bundle_meta and 'hidden_channels' in bundle_meta['hyperparameters']:
-                    hidden_dim = int(bundle_meta['hyperparameters']['hidden_channels'])
-                else:
-                    st = bundle_meta.get('model_state_dict', bundle_meta.get('encoder_state_dict', bundle_meta))
-                    if isinstance(st, dict):
-                        for k, v in st.items():
-                            if 'gat1.lin_src.weight' in k or 'gat1.lin_l.weight' in k:
-                                hidden_dim = int(v.shape[0] // 2)
-                                break
-        except Exception:
-            pass
-
     model = AuditDDIModel(
         in_channels=in_channels,
         hidden_channels=hidden_dim,
@@ -313,7 +311,7 @@ def train_extended_multimodal(
         architecture_version=architecture_version,
         gene_feature_dim=cache.gene_dim,
         gene_hidden_channels=64,
-        use_clinical_toxicity=is_multimodal,
+        use_clinical_toxicity=is_multimodal and use_faers_features,
         use_cross_modal_attention=use_cross_modal_attention if is_multimodal else False,
         use_cross_modal_target_attention=is_multimodal and use_target_encoder,
         use_cross_modal_pdb_attention=is_multimodal,
@@ -337,43 +335,6 @@ def train_extended_multimodal(
     )
 
     encoder_warmed = False
-    if chembl_pretrained_path and Path(chembl_pretrained_path).is_file():
-        from src.models.encoder import EdgeAwareMolecularEncoder
-        from src.models.encoder_pretraining import load_pretrained_edge_aware_encoder
-        print(f"Loading ChEMBL pre-trained encoder weights from: {chembl_pretrained_path} (hidden_dim={hidden_dim})")
-        try:
-            if isinstance(model.encoder, EdgeAwareMolecularEncoder):
-                load_pretrained_edge_aware_encoder(
-                    encoder=model.encoder,
-                    path=chembl_pretrained_path,
-                    expected_in_channels=in_channels,
-                    expected_edge_feature_dim=edge_dim,
-                    expected_hidden_channels=hidden_dim,
-                    map_location=device,
-                )
-                print("Successfully initialized molecular encoder with ChEMBL representations.")
-                encoder_warmed = True
-            else:
-                print("Warning: model encoder is not an EdgeAwareMolecularEncoder; skipping ChEMBL warm start.")
-        except Exception as exc:
-            try:
-                ckpt_obj = torch.load(chembl_pretrained_path, map_location=device, weights_only=False)
-                st_dict = ckpt_obj.get('model_state_dict', ckpt_obj.get('encoder_state_dict', ckpt_obj))
-                target_state = model.encoder.state_dict()
-                enc_dict = {}
-                for k, v in st_dict.items():
-                    clean_k = k.replace('encoder.', '')
-                    if clean_k in target_state and target_state[clean_k].shape == v.shape:
-                        enc_dict[clean_k] = v
-                if enc_dict and any(k.startswith('gat') for k in enc_dict):
-                    model.encoder.load_state_dict(enc_dict, strict=False)
-                    print(f"✅ Extracted and loaded {len(enc_dict)} molecular encoder weights from checkpoint: {chembl_pretrained_path}")
-                    encoder_warmed = True
-                else:
-                    print(f"Notice: checkpoint {Path(chembl_pretrained_path).name} encoder shapes do not match current architecture (expected {len(target_state)} layers), initializing via self-supervised contrastive warm-up.")
-            except Exception as inner_exc:
-                print(f"Notice: could not load encoder weights from {chembl_pretrained_path} ({inner_exc}), proceeding with warm-up check.")
-
     if not encoder_warmed and hasattr(model, 'encoder'):
         from src.models.encoder import EdgeAwareMolecularEncoder
         from src.models.encoder_pretraining import (
@@ -391,7 +352,8 @@ def train_extended_multimodal(
                     hidden_channels=hidden_dim,
                 ).to(device)
                 pt_opt = AdamW(pretrainer.parameters(), lr=1e-3, weight_decay=1e-4)
-                graph_list = list(cache.graphs.values())
+                # Never warm the encoder on held-out validation/test molecules.
+                graph_list = [cache.graphs[s] for s in training_drugs if s in cache.graphs]
                 pretrainer.train()
                 for _ in range(15):
                     perm = torch.randperm(len(graph_list)).tolist()
@@ -435,11 +397,9 @@ def train_extended_multimodal(
 
     history_records: list[dict[str, Any]] = []
     best_val_auroc = -1.0
-    best_s1_auroc = -1.0
-    best_s1_epoch = 1
-    epochs_without_s1_improvement = 0
+    best_val_epoch = 0
+    epochs_without_val_improvement = 0
     best_weights_path = out_p / f'{architecture_version}_best.pt'
-    best_s1_weights_path = out_p / f'{architecture_version}_best_s1.pt'
 
     print(f"\n{'=' * 80}")
     print(f"STARTING EXTENDED TRAINING: {architecture_version} ({epochs} epochs on {device})")
@@ -509,7 +469,7 @@ def train_extended_multimodal(
                             bio_sims.append((geo_sim, geomask, 0.2))
 
                     # 4. FAERS Clinical Adverse Event Proximity
-                    if 'tox_a' in batch and 'tox_b' in batch:
+                    if use_faers_features and 'tox_a' in batch and 'tox_b' in batch:
                         toxa = batch['tox_a'].to(device).float()
                         toxb = batch['tox_b'].to(device).float()
                         toxmask = (batch['tox_mask_a'].to(device) > 0.5) & (batch['tox_mask_b'].to(device) > 0.5)
@@ -593,13 +553,22 @@ def train_extended_multimodal(
 
         val_scores, val_targets = predict_loader(model, val_loader, device, is_multimodal=is_multimodal)
         val_metrics = evaluate_predictions(val_scores, val_targets, threshold='optimal')
-
-        s1_loader = test_loaders.get('s1_cold')
-        if s1_loader is not None:
-            s1_scores, s1_targets = predict_loader(model, s1_loader, device, is_multimodal=is_multimodal)
-            s1_metrics = evaluate_predictions(s1_scores, s1_targets, threshold='optimal')
-        else:
-            s1_metrics = {'auroc': 0.0, 'auprc': 0.0, 'accuracy': 0.0, 'f1': 0.0, 'false_negatives': 0, 'fnr': 0.0, 'optimal_threshold': 0.5}
+        cold_dev_metrics: dict[str, dict[str, float]] = {}
+        for split_name, dev_frame in (cold_dev_splits or {}).items():
+            if dev_frame.empty:
+                continue
+            dev_loader = _make_dataloader(dev_frame, cache, batch_size=batch_size, shuffle=False, neighbor_memory=neighbor_mem)
+            dev_scores, dev_targets = predict_loader(model, dev_loader, device, is_multimodal=is_multimodal)
+            cold_dev_metrics[split_name] = evaluate_predictions(dev_scores, dev_targets, threshold='optimal')
+        selection_values = [val_metrics['auroc']]
+        selection_values.extend(
+            cold_dev_metrics[name]['auroc']
+            for name in ('s1_dev', 's2_dev')
+            if name in cold_dev_metrics and len(np.unique(
+                np.asarray(cold_dev_splits[name]['label'], dtype=float)
+            )) > 1
+        )
+        selection_score = float(np.mean(selection_values))
 
         record = {
             'epoch': epoch,
@@ -608,34 +577,43 @@ def train_extended_multimodal(
             'val_auprc': val_metrics['auprc'],
             'val_accuracy': val_metrics['accuracy'],
             'val_f1': val_metrics['f1'],
-            's1_cold_auroc': s1_metrics['auroc'],
-            's1_cold_auprc': s1_metrics['auprc'],
-            's1_cold_accuracy': s1_metrics['accuracy'],
-            's1_cold_f1': s1_metrics['f1'],
-            's1_cold_fn': s1_metrics['false_negatives'],
-            's1_cold_opt_thresh': s1_metrics['optimal_threshold'],
+            'selection_score_macro_auroc': selection_score,
+            **{
+                f'{name}_{metric}': value
+                for name, metrics in cold_dev_metrics.items()
+                for metric, value in metrics.items()
+            },
         }
         history_records.append(record)
 
-        is_best = val_metrics['auroc'] > best_val_auroc
+        is_best = selection_score > best_val_auroc
         if is_best:
-            best_val_auroc = val_metrics['auroc']
+            best_val_auroc = selection_score
             best_val_epoch = epoch
-            epochs_without_s1_improvement = 0
+            epochs_without_val_improvement = 0
             best_dict = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_auroc': best_val_auroc,
+                'model_selection_metric': 'macro_auroc_transductive_validation_s1_dev_s2_dev',
                 'val_accuracy': val_metrics['accuracy'],
                 'optimal_threshold': val_metrics.get('optimal_threshold', 0.35),
+                'split_thresholds': {
+                    'transductive': float(val_metrics.get('optimal_threshold', 0.5)),
+                    **{
+                        's1_cold' if name == 's1_dev' else 's2_semi': float(metrics['optimal_threshold'])
+                        for name, metrics in cold_dev_metrics.items()
+                        if name in {'s1_dev', 's2_dev'}
+                    },
+                },
                 'in_channels': in_channels,
                 'hidden_channels': hidden_dim,
                 'edge_feature_dim': edge_dim,
                 'architecture_version': architecture_version,
                 'gene_feature_dim': cache.gene_dim,
                 'gene_hidden_channels': 64,
-                'use_clinical_toxicity': is_multimodal,
+                'use_clinical_toxicity': is_multimodal and use_faers_features,
                 'use_neighbor_memory': use_neighbor_memory,
                 'use_target_encoder': use_target_encoder,
                 'target_feature_dim': cache.target_dim,
@@ -657,18 +635,16 @@ def train_extended_multimodal(
                 'embedding_noise_std': embedding_noise_std,
             }
             torch.save(best_dict, best_weights_path)
-            torch.save(best_dict, best_s1_weights_path)
         else:
-            epochs_without_s1_improvement += 1
+            epochs_without_val_improvement += 1
 
         best_mark = " [* Best Val]" if is_best else ""
         print(f"  Epoch {epoch:02d}/{epochs:02d} ({ep_sec:.1f}s) - Loss: {avg_loss:.4f} | "
-              f"Val AUROC: {val_metrics['auroc']:.4f} (Acc: {val_metrics['accuracy']*100:.1f}%) | "
-              f"Diagnostic S1 AUROC: {s1_metrics['auroc']:.4f} (Acc: {s1_metrics['accuracy']*100:.1f}%, FN: {s1_metrics['false_negatives']}){best_mark}")
+              f"Val AUROC: {val_metrics['auroc']:.4f} (Acc: {val_metrics['accuracy']*100:.1f}%){best_mark}")
 
         # Early Stopping: Based strictly on validation split (zero test set leakage)
-        if patience > 0 and epochs_without_s1_improvement >= patience and epoch >= 4:
-            print(f"\n⏹️ Early stopping triggered at Epoch {epoch}: Validation AUROC has not improved for {patience} consecutive epochs (Peak Val AUROC: {best_val_auroc:.4f} at Epoch {best_val_epoch}). Restoring peak validation checkpoint.")
+        if patience > 0 and epochs_without_val_improvement >= patience and epoch >= 4:
+            print(f"\n⏹️ Early stopping triggered at Epoch {epoch}: Development selection score has not improved for {patience} consecutive epochs (Peak macro AUROC: {best_val_auroc:.4f} at Epoch {best_val_epoch}). Restoring best development checkpoint.")
             break
 
     # Load peak validation checkpoint for honest out-of-sample evaluation
@@ -676,71 +652,28 @@ def train_extended_multimodal(
     if target_weights_path.is_file():
         ckpt = torch.load(target_weights_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
-        print(f"\nLoaded peak validation checkpoint from epoch {ckpt['epoch']} (Val AUROC: {ckpt.get('val_auroc', 'N/A')})")
+        print(f"\nLoaded best development checkpoint from epoch {ckpt['epoch']} (selection AUROC: {ckpt.get('val_auroc', 'N/A')})")
 
     history_df = pd.DataFrame(history_records)
     history_df.to_csv(out_p / f'{architecture_version}_training_history.csv', index=False)
 
     # Final split evaluation
+    frozen_threshold = float(ckpt.get('optimal_threshold', 0.5)) if target_weights_path.is_file() else 0.5
+    split_thresholds = ckpt.get('split_thresholds', {}) if target_weights_path.is_file() else {}
     final_results: dict[str, Any] = {
         'architecture': architecture_version,
         'best_val_auroc': best_val_auroc,
-        'peak_s1_cold_auroc': best_s1_auroc,
+        'best_val_epoch': best_val_epoch,
+        'validation_selected_threshold': frozen_threshold,
+        'val_optimal_threshold': frozen_threshold,
+        'test_evaluation_protocol': 'single_evaluation_after_macro_auroc_selection_on_validation_and_cold_dev; thresholds_frozen_from_matching_dev_splits',
     }
     for name, loader in test_loaders.items():
         scores, targets = predict_loader(model, loader, device, is_multimodal=is_multimodal)
-        m = evaluate_predictions(scores, targets, threshold='optimal')
+        split_threshold = float(split_thresholds.get(name, frozen_threshold))
+        m = evaluate_predictions(scores, targets, threshold=split_threshold)
         for k, v in m.items():
             final_results[f'{name}_{k}'] = v
-
-    if best_s1_weights_path.is_file() and 's1_cold' in test_loaders:
-        ckpt_s1 = torch.load(best_s1_weights_path, map_location=device)
-        try:
-            s1_eval_model = model_from_checkpoint(ckpt_s1).to(device)
-            s1_eval_model.load_state_dict(ckpt_s1['model_state_dict'])
-        except Exception:
-            s1_eval_model = AuditDDIModel(
-                in_channels=in_channels,
-                hidden_channels=hidden_dim,
-                edge_feature_dim=edge_dim,
-                architecture_version=architecture_version,
-                gene_feature_dim=cache.gene_dim,
-                gene_hidden_channels=64,
-                use_clinical_toxicity=is_multimodal,
-                use_cross_modal_attention=use_cross_modal_attention if is_multimodal else False,
-                use_cross_modal_target_attention=is_multimodal and use_target_encoder,
-                use_cross_modal_pdb_attention=is_multimodal,
-                use_inductive_bio_features=is_multimodal,
-                use_fusion_norm=is_multimodal,
-                use_cross_drug_attention=use_cross_drug_attention,
-                use_target_encoder=use_target_encoder,
-                target_feature_dim=cache.target_dim,
-                target_hidden_channels=64,
-                use_pdb_encoder=is_multimodal,
-                pdb_feature_dim=cache.pdb_dim,
-                pdb_hidden_channels=64,
-                use_neighbor_memory=use_neighbor_memory,
-                use_geo_features=is_multimodal,
-                use_geo_encoder=is_multimodal,
-                geo_dim=cache.geo_dim,
-                geo_hidden_channels=32,
-                memory_dropout=memory_dropout,
-                embedding_noise_std=embedding_noise_std,
-            ).to(device)
-            s1_eval_model.load_state_dict(ckpt_s1['model_state_dict'])
-        s1_scores, s1_targets = predict_loader(s1_eval_model, test_loaders['s1_cold'], device, is_multimodal=is_multimodal)
-        s1_best_metrics = evaluate_predictions(s1_scores, s1_targets, threshold='optimal')
-        final_results['s1_best_epoch'] = ckpt_s1.get('epoch')
-        final_results['s1_best_auroc'] = s1_best_metrics['auroc']
-        final_results['s1_best_auprc'] = s1_best_metrics['auprc']
-        final_results['s1_best_accuracy'] = s1_best_metrics['accuracy']
-        final_results['s1_best_recall'] = s1_best_metrics.get('recall', 0.0)
-        final_results['s1_best_sensitivity'] = s1_best_metrics.get('sensitivity', 0.0)
-        final_results['s1_best_fn'] = s1_best_metrics['false_negatives']
-        final_results['s1_best_opt_thresh'] = s1_best_metrics['optimal_threshold']
-        print(f"Peak S1 Model Verified: Epoch {ckpt_s1.get('epoch')} -> S1 AUROC = {s1_best_metrics['auroc']:.4f}, Accuracy = {s1_best_metrics['accuracy']*100:.1f}%, Recall = {s1_best_metrics.get('recall', 0.0)*100:.1f}%, FN = {s1_best_metrics['false_negatives']}")
-        if select_best_by == 's1':
-            model = s1_eval_model
 
     return model, history_df, final_results
 
@@ -751,15 +684,17 @@ def run_modality_ablation_study(
     val_df: pd.DataFrame,
     test_splits: dict[str, pd.DataFrame],
     output_dir: str | Path,
+    cold_dev_splits: dict[str, pd.DataFrame] | None = None,
     epochs: int = 5,
     batch_size: int = 64,
     device: torch.device | None = None,
     chembl_pretrained_path: str | Path | None = None,
     use_neighbor_memory: bool = True,
-    select_best_by: str = 's1',
+    select_best_by: str = 'val',
     pos_weight: float = 1.75,
     use_ssl: bool = False,
     use_target_encoder: bool = True,
+    use_faers_features: bool = False,
     memory_dropout: float = 0.75,
 ) -> pd.DataFrame:
     """Systematically run all 4 modality ablation variants and report deltas."""
@@ -772,7 +707,6 @@ def run_modality_ablation_study(
     ablation_variants = [
         ('Molecular Only (Baseline)', MODEL_ARCHITECTURE_EDGE_AWARE),
         ('Molecular + PharmGKB Genes', MODEL_ARCHITECTURE_ABLATION_GENES),
-        ('Molecular + FAERS Toxicity', MODEL_ARCHITECTURE_ABLATION_FAERS),
         ('Full Multimodal (AuditDDI)', MODEL_ARCHITECTURE_MULTIMODAL),
     ]
 
@@ -790,6 +724,7 @@ def run_modality_ablation_study(
             train_df=train_df,
             val_df=val_df,
             test_splits=test_splits,
+            cold_dev_splits=cold_dev_splits,
             output_dir=out_p / 'ablation_checkpoints',
             epochs=epochs,
             batch_size=batch_size,
@@ -801,6 +736,7 @@ def run_modality_ablation_study(
             pos_weight=pos_weight,
             use_ssl=use_ssl,
             use_target_encoder=use_tgt,
+            use_faers_features=use_faers_features,
             memory_dropout=memory_dropout,
         )
         results['variant_name'] = display_name
@@ -1164,7 +1100,7 @@ def generate_literature_benchmark_report(
     output_dir: Path | str,
     cross_dataset_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Generate standardized 4-tier Cold-Start Literature Benchmark Comparison Table."""
+    """Report measured split metrics without unsupported literature targets."""
     out_p = Path(output_dir)
     out_p.mkdir(parents=True, exist_ok=True)
 
@@ -1199,48 +1135,32 @@ def generate_literature_benchmark_report(
 
     rows = [
         {
-            'Scenario Type': 'Warm-Start (Baseline)',
-            'Definition': 'Both drug and target/disease seen during training',
-            'Expected AUC-ROC': '0.90 – 0.99',
-            'AuditDDI AUC-ROC': f"{warm_auroc:.4f}",
-            'Expected AUPR / F1': '0.85 – 0.92',
-            'AuditDDI AUPRC': f"{warm_auprc:.4f}",
-            'AuditDDI Recall': f"{warm_rec*100:.1f}%",
-            'Status / Difficulty': 'Solved; memorisation works',
-            'Benefit': 'Efficiency – Reliable benchmarking, fast validation of known interactions',
+            'Evaluation split': 'Transductive',
+            'Definition': 'Both drugs occur in the training drug set; pair held out.',
+            'AUROC': f"{warm_auroc:.4f}",
+            'AUPRC': f"{warm_auprc:.4f}",
+            'Recall at validation threshold': f"{warm_rec*100:.1f}%",
         },
         {
-            'Scenario Type': 'Cold-Drug / Compound',
-            'Definition': 'New molecule vs existing target (S2 Semi-Cold)',
-            'Expected AUC-ROC': '0.79 – 0.88',
-            'AuditDDI AUC-ROC': f"{cold_drug_auroc:.4f}",
-            'Expected AUPR / F1': '0.80 – 0.89',
-            'AuditDDI AUPRC': f"{cold_drug_auprc:.4f}",
-            'AuditDDI Recall': f"{cold_drug_rec*100:.1f}%",
-            'Status / Difficulty': 'Moderately difficult; aided by multimodal targets & ChemBERTa',
-            'Benefit': 'Discovery – Accelerates novel compound screening against validated targets',
+            'Evaluation split': 'S2',
+            'Definition': 'Exactly one drug is absent from the training drug set.',
+            'AUROC': f"{cold_drug_auroc:.4f}",
+            'AUPRC': f"{cold_drug_auprc:.4f}",
+            'Recall at validation threshold': f"{cold_drug_rec*100:.1f}%",
         },
         {
-            'Scenario Type': 'Cold-Target / Protein',
-            'Definition': 'Existing drug vs new protein/disease pathway (Target Profiled)',
-            'Expected AUC-ROC': '0.73 – 0.87',
-            'AuditDDI AUC-ROC': f"{cold_target_auroc:.4f}" if cold_target_auroc > 0 else 'N/A (Split not profiled)',
-            'Expected AUPR / F1': '0.73 – 0.89',
-            'AuditDDI AUPRC': f"{cold_target_auprc:.4f}" if cold_target_auprc > 0 else 'N/A (Split not profiled)',
-            'AuditDDI Recall': f"{cold_target_rec*100:.1f}%" if cold_target_rec > 0 else 'N/A',
-            'Status / Difficulty': 'Major bottleneck; addressed via BindingDB & PDB structural encoding',
-            'Benefit': 'Expansion – Enables drug repurposing for new diseases and pathways',
+            'Evaluation split': 'S1 with target/pathway coverage',
+            'Definition': 'S1 subgroup analysis by available biological annotations; not a separate cold-target split.',
+            'AUROC': f"{cold_target_auroc:.4f}" if cold_target_auroc > 0 else 'N/A',
+            'AUPRC': f"{cold_target_auprc:.4f}" if cold_target_auprc > 0 else 'N/A',
+            'Recall at validation threshold': f"{cold_target_rec*100:.1f}%" if cold_target_rec > 0 else 'N/A',
         },
         {
-            'Scenario Type': 'Double Blind-Start',
-            'Definition': 'Both drug and target/partner novel (S1 True Cold-Start)',
-            'Expected AUC-ROC': '0.60 – 0.79',
-            'AuditDDI AUC-ROC': f"{s1_auroc:.4f}",
-            'Expected AUPR / F1': '0.55 – 0.65',
-            'AuditDDI AUPRC': f"{s1_auprc:.4f}",
-            'AuditDDI Recall': f"{s1_rec*100:.1f}%",
-            'Status / Difficulty': 'Highly uncertain; true inductive frontier',
-            'Benefit': 'Innovation – True frontier: discovering first-in-class drugs and pathways',
+            'Evaluation split': 'S1',
+            'Definition': 'Neither drug occurs in the training drug set.',
+            'AUROC': f"{s1_auroc:.4f}",
+            'AUPRC': f"{s1_auprc:.4f}",
+            'Recall at validation threshold': f"{s1_rec*100:.1f}%",
         },
     ]
 
@@ -1248,36 +1168,18 @@ def generate_literature_benchmark_report(
     bench_df.to_csv(out_p / 'literature_benchmark_comparison.csv', index=False)
 
     md_lines = [
-        "# 📊 Cold-Start Scenario Performance Benchmark (Literature vs AuditDDI)",
+        "# Measured split performance",
         "",
-        "| Scenario Type | Definition | Expected AUC-ROC | AuditDDI AUC-ROC | Expected AUPR / F1 | AuditDDI AUPRC | AuditDDI Recall | Status / Difficulty | Benefit |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "Thresholded recall uses the threshold selected on validation data. These are single-run measurements, not clinical performance claims.",
+        "",
+        "| Evaluation split | Definition | AUROC | AUPRC | Recall at validation threshold |",
+        "|---|---|---:|---:|---:|",
     ]
     for r in rows:
-        md_lines.append(f"| {r['Scenario Type']} | {r['Definition']} | {r['Expected AUC-ROC']} | **{r['AuditDDI AUC-ROC']}** | {r['Expected AUPR / F1']} | **{r['AuditDDI AUPRC']}** | **{r['AuditDDI Recall']}** | {r['Status / Difficulty']} | {r['Benefit']} |")
-
-    imbalance_status = f"✅ SUSTAINED ({s1_auprc:.4f} within expected 0.55–0.65 range; Cold-Drug: {cold_drug_auprc:.4f} >= 0.80)" if s1_auprc >= 0.55 else f"⚠️ Measured: {s1_auprc:.4f} (Literature Target: >= 0.55)"
-    recall_status = f"✅ MET ({s1_rec*100:.1f}% > 70%)" if s1_rec >= 0.70 else f"⚠️ Measured: {s1_rec*100:.1f}% (Literature Target: > 70%)"
-
-    md_lines.extend([
-        "",
-        "---",
-        "### 🔍 Key Metrics Insights Validation",
-        "",
-        f"- **Imbalance Trap (Sustained AUPR within expected benchmarks)**: {imbalance_status}",
-        f"- **Sensitivity / Recall (>70% standard)**: {recall_status}",
-        "",
-    ])
+        md_lines.append(f"| {r['Evaluation split']} | {r['Definition']} | {r['AUROC']} | {r['AUPRC']} | {r['Recall at validation threshold']} |")
+    md_lines.append('')
     (out_p / 'literature_benchmark_comparison.md').write_text('\n'.join(md_lines), encoding='utf-8')
-
-    print("\n" + "=" * 95)
-    print("📊 COLD-START SCENARIO PERFORMANCE (LITERATURE BENCHMARK VS AUDITDDI):")
-    print("=" * 95)
-    print(bench_df[['Scenario Type', 'Expected AUC-ROC', 'AuditDDI AUC-ROC', 'Expected AUPR / F1', 'AuditDDI AUPRC', 'AuditDDI Recall']].to_string(index=False))
-    print("-" * 95)
-    print(f"🔍 KEY METRIC: Sensitivity / Recall (>70% standard): S1 Recall = {s1_rec*100:.1f}% [{recall_status}]")
-    print(f"🔍 KEY METRIC: Imbalance Trap (Sustained AUPR): S1 AUPRC = {s1_auprc:.4f} [{imbalance_status}]")
-    print("=" * 95 + "\n")
+    print('\nMeasured transductive/S1/S2 and S1 coverage-subgroup results saved; no fixed literature target is assumed.')
 
     return bench_df
 
@@ -1360,11 +1262,26 @@ def run_full_multimodal_study(
     calibrate: bool = kwargs.pop('calibrate', True)
     pos_weight: float = float(kwargs.pop('pos_weight', 2.2))
     use_ssl: bool = bool(kwargs.pop('use_ssl', False))
+    use_faers_features: bool = bool(kwargs.pop('use_faers_features', False))
+    if use_faers_features:
+        raise ValueError(
+            'The current FAERS bridge has no verified as-of date; full-history toxicity '
+            'scores cannot be used as DDI model inputs without a temporal leakage audit.'
+        )
     ssl_weight: float = float(kwargs.pop('ssl_weight', 0.2))
     memory_dropout: float = float(kwargs.pop('memory_dropout', 0.75))
     bio_align_weight: float = float(kwargs.pop('bio_align_weight', 0.25))
     embedding_noise_std: float = float(kwargs.pop('embedding_noise_std', 0.02))
     patience: int = int(kwargs.pop('patience', 8))
+    model_seed = int(kwargs.pop('seed', os.environ.get('AUDITDDI_MODEL_SEED', '42')))
+    split_seed = int(kwargs.pop('split_seed', os.environ.get('AUDITDDI_SPLIT_SEED', '42')))
+    if model_seed <= 0 or split_seed <= 0:
+        raise ValueError('model_seed and split_seed must be positive integers.')
+    random.seed(model_seed)
+    np.random.seed(model_seed)
+    torch.manual_seed(model_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(model_seed)
 
     if output_dir is None:
         try:
@@ -1374,12 +1291,15 @@ def run_full_multimodal_study(
             out_p = Path(master_nodes_path).resolve().parent.parent / 'multimodal_study_results'
     else:
         out_p = Path(output_dir)
+    # Callers can assign independent output folders per seed; the dedicated
+    # Colab launcher does this so separate accounts never overwrite artifacts.
     out_p.mkdir(parents=True, exist_ok=True)
 
     splits_p = ensure_benchmark_splits(
         splits_dir=splits_dir,
         master_nodes_path=master_nodes_path,
         master_edges_path=master_edges_path,
+        seed=split_seed,
         **kwargs,
     )
 
@@ -1517,6 +1437,37 @@ def run_full_multimodal_study(
         's1_cold': pd.read_csv(splits_p / 's1_test.csv'),
         's2_semi': pd.read_csv(splits_p / 's2_test.csv'),
     }
+    cold_dev_splits = {
+        's1_dev': pd.read_csv(splits_p / 's1_dev.csv'),
+        's2_dev': pd.read_csv(splits_p / 's2_dev.csv'),
+    }
+
+    def sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    split_hashes = {
+        path.name: sha256_file(path)
+        for path in sorted(splits_p.glob('*.csv'))
+        if path.name in {'transductive_train.csv', 'validation.csv', 'transductive_test.csv', 's1_dev.csv', 's2_dev.csv', 's1_test.csv', 's2_test.csv'}
+    }
+    input_manifest = {
+        'model_seed': model_seed,
+        'split_seed': split_seed,
+        'master_nodes_path': str(Path(master_nodes_path).resolve()),
+        'master_nodes_sha256': sha256_file(Path(master_nodes_path)),
+        'split_directory': str(splits_p.resolve()),
+        'split_sha256': split_hashes,
+        'epochs': extended_epochs,
+        'batch_size': batch_size,
+        'evaluation_policy': 'checkpoint_selected_by_macro_auroc_on_transductive_validation_s1_dev_s2_dev; per_split_thresholds_selected_on_matching_dev; test_only_after_selection',
+    }
+    (out_p / 'run_input_manifest.json').write_text(
+        json.dumps(input_manifest, indent=2, sort_keys=True), encoding='utf-8'
+    )
 
     chembl_pretrained_path: str | Path | None = (
         pretrained_encoder_path
@@ -1526,97 +1477,128 @@ def run_full_multimodal_study(
         or kwargs.pop('encoder_checkpoint', None)
         or kwargs.pop('chembl_checkpoint', None)
     )
-
-    # Infallible auto-discovery if path not explicitly given or unverified
-    if chembl_pretrained_path is None or not Path(chembl_pretrained_path).is_file():
-        candidate_dirs = [
-            data_root / 'checkpoints',
-            data_root / 'checkpoints' / 'candidates',
-            data_root / 'chembl',
-            data_root / 'ChEMBL',
-            data_root / 'auditddi' / 'checkpoints',
-            data_root / 'auditddi' / 'backend' / 'checkpoints',
-            data_root / 'pretraining',
-            data_root,
-            resolved_nodes.parent,
-            resolved_nodes.parent.parent,
-            Path('/content/drive/MyDrive/auditddi-results/pretraining'),
-            Path('/content/drive/MyDrive/auditddi-data/chembl'),
-            Path('/content/drive/MyDrive/auditddi-data/ChEMBL'),
-            Path('/content/drive/MyDrive/auditddi-data/checkpoints'),
-            Path('/content/drive/MyDrive/auditddi-data'),
-            Path('/content/drive/MyDrive/pxddi-results/pretraining'),
-            Path('/content/drive/MyDrive/pxddi-data'),
-            Path('/content/drive/MyDrive'),
-        ]
-        # Pass 1: Search across all candidate dirs strictly for true ChEMBL pre-trained encoder files
-        for cd in candidate_dirs:
-            if cd.is_dir():
-                try:
-                    found = list(cd.glob('**/chembl_pretrained_encoder.pt'))
-                    if not found:
-                        found = [f for f in cd.glob('**/*chembl*.pt') if 'encoder' in f.name.lower() or 'pretrain' in f.name.lower()]
-                    if not found:
-                        found = list(cd.glob('**/*chembl*.pt'))
-                    if found:
-                        chembl_pretrained_path = found[0]
-                        print(f"✅ Auto-discovered ChEMBL Pretrained Checkpoint: {chembl_pretrained_path}")
-                        break
-                except Exception:
-                    pass
-
-        # Pass 2: Linux system-wide search for chembl_pretrained_encoder.pt
-        if chembl_pretrained_path is None or not Path(chembl_pretrained_path).is_file():
-            try:
-                import subprocess
-                find_res = subprocess.getoutput("find /content -name 'chembl_pretrained_encoder.pt' 2>/dev/null").strip().splitlines()
-                if not find_res or not any(os.path.isfile(f.strip()) for f in find_res):
-                    find_res = subprocess.getoutput("find /content -name '*chembl*encoder*.pt' 2>/dev/null").strip().splitlines()
-                matches = [m.strip() for m in find_res if m.strip().endswith('.pt') and os.path.isfile(m.strip())]
-                if matches:
-                    chembl_pretrained_path = matches[0]
-                    print(f"✅ Auto-discovered ChEMBL Checkpoint via Linux search: {chembl_pretrained_path}")
-            except Exception:
-                pass
-
-        # Pass 3: Fallback search for any existing trained checkpoints with transferable encoder weights
-        if chembl_pretrained_path is None or not Path(chembl_pretrained_path).is_file():
-            for cd in candidate_dirs:
-                if cd.is_dir():
-                    try:
-                        found = [f for f in cd.glob('**/*.pt') if any(w in f.name.lower() for w in ['encoder', 'multimodal', 'best', 'checkpoint'])]
-                        if found:
-                            chembl_pretrained_path = found[0]
-                            print(f"✅ Auto-discovered Candidate Checkpoint for Encoder Weight Extraction: {chembl_pretrained_path}")
-                            break
-                    except Exception:
-                        pass
+    if chembl_pretrained_path is not None:
+        raise ValueError(
+            'The multimodal split artifacts do not match the standalone ChEMBL '
+            'pretraining split contract. Run ChEMBL as a separately audited '
+            'candidate with src/training/run_experiment_suite.py.'
+        )
 
     print("\n" + "=" * 80)
-    print("AUDITDDI 8-DATASET MULTIMODAL INGESTION SUMMARY:")
+    print("AUDITDDI NINE-SOURCE MULTIMODAL INGESTION SUMMARY:")
     print("=" * 80)
-    print(f"[1/8] TWOSIDES : ✅ Ground-truth DDI labels ({len(train_df):,} train, {len(val_df):,} val, {len(test_splits['s1_cold']):,} S1 cold)")
-    chembl_status = f"✅ Loaded ({chembl_pretrained_path})" if (chembl_pretrained_path and Path(chembl_pretrained_path).is_file()) else "⚠️ Initialized via Self-Supervised Graph Warm-up (Cached Molecular Topologies)"
-    print(f"[2/8] ChEMBL   : {chembl_status}")
-    print(f"[3/8] PubChem  : ✅ 1024-bit Morgan ECFP Structural Fingerprints ({len(cache.fingerprints):,} cached)")
+    print(f"[1/9] TWOSIDES : Ground-truth DDI labels ({len(train_df):,} train, {len(val_df):,} validation, {len(test_splits['s1_cold']):,} S1 test pairs)")
+    chembl_status = 'Not used in this candidate: its checkpoint is evaluated separately under the matching split-provenance protocol.'
+    print(f"[2/9] ChEMBL   : {chembl_status}")
+    print('[3/9] PubChem  : Identity/structure cross-reference only where present in the prepared master catalog.')
     n_genes = sum(1 for m in cache.gene_masks.values() if m.item() > 0)
-    print(f"[4/8] PharmGKB : ✅ Pharmacogenomic CYP Enzymes & Transporters ({n_genes}/{len(cache.graphs)} drugs, dim={cache.gene_dim})")
+    print(f"[4/9] PharmGKB : CYP/enzyme gene profiles ({n_genes}/{len(cache.graphs)} drugs, dim={cache.gene_dim})")
     n_targets = sum(1 for m in cache.target_masks.values() if m.item() > 0)
-    print(f"[5/8] BindingDB: ✅ Target Receptor & Kinase Affinities ({n_targets}/{len(cache.graphs)} drugs, dim={cache.target_dim})")
+    print(f"[5/9] BindingDB: Drug-target profiles ({n_targets}/{len(cache.graphs)} drugs, dim={cache.target_dim})")
+    n_sequences = sum(bool(sequence) for sequence in cache.target_sequences.values())
+    print(f"[6/9] UniProt  : Target sequences ({n_sequences}/{len(cache.graphs)} drugs)")
     n_geo = sum(1 for m in cache.geo_masks.values() if m.item() > 0)
-    print(f"[6/8] GEO      : ✅ Disease Transcriptomic Perturbation Profiles ({n_geo}/{len(cache.graphs)} drugs, dim={cache.geo_dim})")
+    print(f"[7/9] GEO      : Perturbation profiles ({n_geo}/{len(cache.graphs)} drugs, dim={cache.geo_dim})")
     n_tox = sum(1 for m in cache.toxicity_masks.values() if m.item() > 0)
-    print(f"[7/8] FAERS    : ✅ Post-Marketing Clinical Adverse Event Severity ({n_tox}/{len(cache.graphs)} drugs)")
+    print(f"[8/9] FAERS    : {n_tox}/{len(cache.graphs)} toxicity records audited; full-history scores disabled as DDI input pending time-cutoff/overlap audit.")
     n_pdb = sum(1 for m in cache.pdb_masks.values() if m.item() > 0)
-    print(f"[8/8] PDB      : ✅ 3D Macromolecular Co-Crystal Complexes ({n_pdb}/{len(cache.graphs)} drugs, dim={cache.pdb_dim})")
+    print(f"[9/9] PDB      : Protein-ligand target profiles ({n_pdb}/{len(cache.graphs)} drugs, dim={cache.pdb_dim})")
+    print(f"Derived chemical inputs: RDKit molecular graphs and Morgan fingerprints ({len(cache.graphs):,} structures).")
     print("=" * 80 + "\n")
+
+    def split_pair_coverage(frame: pd.DataFrame, masks: dict[str, torch.Tensor]) -> dict[str, Any]:
+        left_col = 'drug_a_id' if 'drug_a_id' in frame.columns else 'source'
+        right_col = 'drug_b_id' if 'drug_b_id' in frame.columns else 'target'
+        covered_both = 0
+        covered_either = 0
+        for left, right in zip(frame[left_col].astype(str), frame[right_col].astype(str)):
+            left_ok = masks.get(left, torch.tensor(0.0)).item() > 0.5
+            right_ok = masks.get(right, torch.tensor(0.0)).item() > 0.5
+            covered_both += int(left_ok and right_ok)
+            covered_either += int(left_ok or right_ok)
+        total = len(frame)
+        return {
+            'pair_rows': total,
+            'both_drugs_covered': covered_both,
+            'either_drug_covered': covered_either,
+            'both_coverage_fraction': covered_both / total if total else None,
+        }
+
+    frames_by_split = {
+        'train': train_df,
+        'validation': val_df,
+        'transductive_test': test_splits['transductive'],
+        's1_test': test_splits['s1_cold'],
+        's2_test': test_splits['s2_semi'],
+    }
+    input_manifest.update({
+        'chembl_pretrained_checkpoint': (
+            str(Path(chembl_pretrained_path).resolve())
+            if chembl_pretrained_path and Path(chembl_pretrained_path).is_file()
+            else None
+        ),
+        'chembl_pretrained_checkpoint_sha256': (
+            sha256_file(Path(chembl_pretrained_path))
+            if chembl_pretrained_path and Path(chembl_pretrained_path).is_file()
+            else None
+        ),
+        'resolved_data_root': str(data_root.resolve()),
+        'feature_coverage_drugs': {
+            'molecular_graph': len(cache.graphs),
+            'rdkit_morgan_fingerprint': len(cache.fingerprints),
+            'pharmgkb_gene': n_genes,
+            'faers_toxicity': n_tox,
+            'bindingdb_target': n_targets,
+            'geo_expression': n_geo,
+            'pdb_structure': n_pdb,
+            'uniprot_sequence': sum(bool(sequence) for sequence in cache.target_sequences.values()),
+        },
+        'feature_dimensions': {
+            'pharmgkb_gene': cache.gene_dim,
+            'bindingdb_target': cache.target_dim,
+            'geo_expression': cache.geo_dim,
+            'pdb_structure': cache.pdb_dim,
+        },
+        'pair_coverage_by_split': {
+            'pharmgkb_gene': {
+                name: split_pair_coverage(frame, cache.gene_masks)
+                for name, frame in frames_by_split.items()
+            },
+            'faers_toxicity_audited_but_not_used': {
+                name: split_pair_coverage(frame, cache.toxicity_masks)
+                for name, frame in frames_by_split.items()
+            },
+            'bindingdb_target': {
+                name: split_pair_coverage(frame, cache.target_masks)
+                for name, frame in frames_by_split.items()
+            },
+            'geo_expression': {
+                name: split_pair_coverage(frame, cache.geo_masks)
+                for name, frame in frames_by_split.items()
+            },
+            'pdb_structure': {
+                name: split_pair_coverage(frame, cache.pdb_masks)
+                for name, frame in frames_by_split.items()
+            },
+            'uniprot_sequence': {
+                name: split_pair_coverage(
+                    frame,
+                    {drug: torch.tensor(float(bool(seq))) for drug, seq in cache.target_sequences.items()},
+                )
+                for name, frame in frames_by_split.items()
+            },
+        },
+    })
+    (out_p / 'run_input_manifest.json').write_text(
+        json.dumps(input_manifest, indent=2, sort_keys=True), encoding='utf-8'
+    )
 
     use_cross_modal_attention: bool = kwargs.pop('use_cross_modal_attention', True)
     use_cross_drug_attention: bool = kwargs.pop('use_cross_drug_attention', False)
     use_target_encoder: bool = kwargs.pop('use_target_encoder', True)
     use_protein_sequence_encoder: bool = bool(kwargs.pop('use_protein_sequence_encoder', True))
     use_neighbor_memory: bool = kwargs.pop('use_neighbor_memory', False)
-    select_best_by: str = kwargs.pop('select_best_by', 's1')
+    select_best_by: str = kwargs.pop('select_best_by', 'val')
 
     neighbor_mem = None
     if use_neighbor_memory:
@@ -1633,6 +1615,7 @@ def run_full_multimodal_study(
         train_df=train_df,
         val_df=val_df,
         test_splits=test_splits,
+        cold_dev_splits=cold_dev_splits,
         output_dir=out_p,
         epochs=extended_epochs,
         batch_size=batch_size,
@@ -1642,6 +1625,7 @@ def run_full_multimodal_study(
         use_cross_modal_attention=use_cross_modal_attention,
         use_cross_drug_attention=use_cross_drug_attention,
         use_target_encoder=use_target_encoder,
+        use_faers_features=use_faers_features,
         use_protein_sequence_encoder=use_protein_sequence_encoder,
         use_neighbor_memory=use_neighbor_memory,
         select_best_by=select_best_by,
@@ -1662,6 +1646,7 @@ def run_full_multimodal_study(
             train_df=train_df,
             val_df=val_df,
             test_splits=test_splits,
+            cold_dev_splits=cold_dev_splits,
             output_dir=out_p / 'ablation',
             epochs=ablation_epochs,
             batch_size=batch_size,
@@ -1672,6 +1657,7 @@ def run_full_multimodal_study(
             pos_weight=pos_weight,
             use_ssl=use_ssl,
             use_target_encoder=use_target_encoder,
+            use_faers_features=use_faers_features,
             memory_dropout=memory_dropout,
         )
         ablation_dict = cast(list[dict[str, Any]], ablation_df.to_dict(orient='records'))
@@ -1734,7 +1720,7 @@ def run_full_multimodal_study(
     transductive_test_auroc = extended_metrics.get('transductive_auroc', extended_metrics.get('transductive_test_auroc', 0.0))
     s1_auroc = extended_metrics.get('s1_cold_auroc', extended_metrics.get('s1_test_auroc', 0.0))
     s2_auroc = extended_metrics.get('s2_semi_auroc', extended_metrics.get('s2_test_auroc', 0.0))
-    peak_s1_auroc = extended_metrics.get('s1_best_auroc', extended_metrics.get('peak_s1_cold_auroc', s1_auroc))
+    peak_s1_auroc = s1_auroc
 
     transductive_and_cold_metrics = {
         'test_auroc': transductive_test_auroc,
@@ -1745,8 +1731,8 @@ def run_full_multimodal_study(
     peak_s1_metrics = {
         's1_cold_auroc': peak_s1_auroc,
         'test_auroc': peak_s1_auroc,
-        's1_best_epoch': extended_metrics.get('s1_best_epoch'),
-        's1_best_auprc': extended_metrics.get('s1_best_auprc'),
+        'evaluation_note': 'S1 is evaluated once at the validation-selected checkpoint; no peak-test selection.',
+        's1_auprc': extended_metrics.get('s1_cold_average_precision', extended_metrics.get('s1_cold_auprc')),
     }
 
     return {
