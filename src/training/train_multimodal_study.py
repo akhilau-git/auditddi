@@ -397,12 +397,30 @@ def train_extended_multimodal(
     best_val_epoch = 0
     epochs_without_val_improvement = 0
     best_weights_path = out_p / f'{architecture_version}_best.pt'
+    history_file = out_p / f'{architecture_version}_training_history.csv'
 
-    print(f"\n{'=' * 80}")
-    print(f"STARTING EXTENDED TRAINING: {architecture_version} ({epochs} epochs on {device})")
-    print(f"{'=' * 80}")
+    resume_eval = bool(kwargs.get('resume_if_checkpoint_exists', False))
+    skip_training = False
+    history_df: pd.DataFrame | None = None
+    if resume_eval and best_weights_path.is_file() and history_file.is_file():
+        try:
+            cached_history = pd.read_csv(history_file)
+            if len(cached_history) >= epochs:
+                print(f"\n[RESUME] Found existing {len(cached_history)}-epoch checkpoint at: {best_weights_path}")
+                print("Skipping training loop and proceeding directly to post-hoc evaluation...")
+                history_df = cached_history
+                skip_training = True
+        except Exception as e:
+            print(f"Notice: unable to load existing history for resume: {e}")
+            skip_training = False
 
-    for epoch in range(1, epochs + 1):
+    epoch_range = [] if skip_training else range(1, epochs + 1)
+    if not skip_training:
+        print(f"\n{'=' * 80}")
+        print(f"STARTING EXTENDED TRAINING: {architecture_version} ({epochs} epochs on {device})")
+        print(f"{'=' * 80}")
+
+    for epoch in epoch_range:
         ep_start = time.perf_counter()
         model.train()
         total_loss = 0.0
@@ -646,13 +664,17 @@ def train_extended_multimodal(
 
     # Load peak validation checkpoint for honest out-of-sample evaluation
     target_weights_path = best_weights_path
+    ckpt: dict[str, Any] = {}
     if target_weights_path.is_file():
         ckpt = torch.load(target_weights_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
+        best_val_auroc = float(ckpt.get('val_auroc', best_val_auroc))
+        best_val_epoch = int(ckpt.get('epoch', best_val_epoch))
         print(f"\nLoaded best development checkpoint from epoch {ckpt['epoch']} (selection AUROC: {ckpt.get('val_auroc', 'N/A')})")
 
-    history_df = pd.DataFrame(history_records)
-    history_df.to_csv(out_p / f'{architecture_version}_training_history.csv', index=False)
+    if not skip_training or history_df is None:
+        history_df = pd.DataFrame(history_records)
+        history_df.to_csv(out_p / f'{architecture_version}_training_history.csv', index=False)
 
     # Final split evaluation
     frozen_threshold = float(ckpt.get('optimal_threshold', 0.5)) if target_weights_path.is_file() else 0.5
@@ -804,14 +826,23 @@ def analyze_cold_start_coverage_errors(
     preds = (scores >= optimal_threshold).astype(int)
 
     # Annotate coverage tier per pair
-    # Resolve columns
-    src_col = 'drug_a_id' if 'drug_a_id' in s1_test_df.columns else 'source'
-    dst_col = 'drug_b_id' if 'drug_b_id' in s1_test_df.columns else 'target'
+    # Extract pair identities strictly aligned with DataLoader evaluated samples
+    dataset_samples = getattr(loader.dataset, 'samples', None)
+    if dataset_samples is not None:
+        pairs = [(str(s[0]).strip(), str(s[1]).strip()) for s in dataset_samples]
+    else:
+        src_col = 'drug_a_id' if 'drug_a_id' in s1_test_df.columns else 'source'
+        dst_col = 'drug_b_id' if 'drug_b_id' in s1_test_df.columns else 'target'
+        pairs = [
+            (str(getattr(r, src_col)).strip(), str(getattr(r, dst_col)).strip())
+            for r in s1_test_df.itertuples(index=False)
+            if str(getattr(r, src_col)).strip() in cache.graphs and str(getattr(r, dst_col)).strip() in cache.graphs
+        ]
 
     rows: list[dict[str, Any]] = []
-    for idx, row in enumerate(s1_test_df.itertuples(index=False)):
-        sa = getattr(row, src_col)
-        sb = getattr(row, dst_col)
+    n_samples = min(len(pairs), len(targets), len(scores), len(preds))
+    for idx in range(n_samples):
+        sa, sb = pairs[idx]
         lbl = float(targets[idx])
         prob = float(scores[idx])
         pred = int(preds[idx])
@@ -1016,12 +1047,23 @@ def evaluate_multimodal_subcohort_generalization(
         except Exception:
             optimal_threshold = 0.38
 
-    src_col = 'drug_a_id' if 'drug_a_id' in test_df.columns else test_df.columns[0]
-    tgt_col = 'drug_b_id' if 'drug_b_id' in test_df.columns else test_df.columns[1]
+    # Extract pair identities strictly aligned with DataLoader evaluated samples
+    dataset_samples = getattr(loader.dataset, 'samples', None)
+    if dataset_samples is not None:
+        pairs = [(str(s[0]).strip(), str(s[1]).strip()) for s in dataset_samples]
+    else:
+        src_col = 'drug_a_id' if 'drug_a_id' in test_df.columns else test_df.columns[0]
+        tgt_col = 'drug_b_id' if 'drug_b_id' in test_df.columns else test_df.columns[1]
+        pairs = [
+            (str(getattr(r, src_col)).strip(), str(getattr(r, tgt_col)).strip())
+            for r in test_df.itertuples(index=False)
+            if str(getattr(r, src_col)).strip() in cache.graphs and str(getattr(r, tgt_col)).strip() in cache.graphs
+        ]
 
     rows: list[dict[str, Any]] = []
-    for idx, (_, r) in enumerate(test_df.iterrows()):
-        sa, sb = str(r[src_col]).strip(), str(r[tgt_col]).strip()
+    n_samples = min(len(pairs), len(targets), len(scores))
+    for idx in range(n_samples):
+        sa, sb = pairs[idx]
         y = float(targets[idx])
         p = float(scores[idx])
 
@@ -1607,6 +1649,7 @@ def run_full_multimodal_study(
     use_protein_sequence_encoder: bool = bool(kwargs.pop('use_protein_sequence_encoder', True))
     use_neighbor_memory: bool = kwargs.pop('use_neighbor_memory', False)
     select_best_by: str = kwargs.pop('select_best_by', 'val')
+    resume_if_checkpoint_exists: bool = bool(kwargs.pop('resume_if_checkpoint_exists', False))
 
     neighbor_mem = None
     if use_neighbor_memory:
@@ -1644,6 +1687,7 @@ def run_full_multimodal_study(
         embedding_noise_std=embedding_noise_std,
         bio_align_weight=bio_align_weight,
         patience=patience,
+        resume_if_checkpoint_exists=resume_if_checkpoint_exists,
     )
 
     # 5. Modality Ablation Study

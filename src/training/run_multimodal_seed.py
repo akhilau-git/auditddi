@@ -75,6 +75,8 @@ def main() -> None:
                         help='Require at least this many positive and negative pairs in every split.')
     parser.add_argument('--prepare-only', action='store_true',
                         help='Resolve inputs/build and validate splits, then exit without training.')
+    parser.add_argument('--overwrite', action='store_true',
+                        help='Overwrite existing seed output folder and re-run training from scratch.')
     args = parser.parse_args()
 
     if args.seed <= 0 or args.split_seed <= 0 or args.epochs <= 0 or args.batch_size <= 0:
@@ -153,16 +155,36 @@ def main() -> None:
     split_dir = Path(split_dir)
     seed_output = output_root / f'seed_{args.seed}'
     completion = seed_output / 'seed_execution_status.json'
-    if completion.is_file():
+    if completion.is_file() and not args.overwrite:
         status = json.loads(completion.read_text(encoding='utf-8'))
         if status.get('status') == 'complete':
             print(f"Seed {args.seed} is already complete at {seed_output}; leaving its artifacts unchanged.")
             return
+
+    history_path = seed_output / 'auditddi_multimodal_v1_training_history.csv'
+    best_weights_path = seed_output / 'auditddi_multimodal_v1_best.pt'
+    has_completed_training = False
+    if best_weights_path.is_file() and history_path.is_file():
+        try:
+            with history_path.open('r', encoding='utf-8') as stream:
+                completed_epochs = max(sum(1 for _ in stream) - 1, 0)
+            if completed_epochs >= args.epochs:
+                has_completed_training = True
+        except Exception:
+            has_completed_training = False
+
     if seed_output.exists():
-        raise FileExistsError(
-            f'{seed_output} already exists but has no completed status marker. '
-            'Use a new seed/output folder or review the partial run before removing it.'
-        )
+        if args.overwrite:
+            print(f"--overwrite specified: clearing existing output folder {seed_output}...")
+            shutil.rmtree(seed_output)
+        elif has_completed_training:
+            print(f"Found completed {args.epochs}-epoch training checkpoint for Seed {args.seed} at {seed_output}.")
+            print("Completing post-hoc evaluation and generating final metrics reports...")
+        else:
+            raise FileExistsError(
+                f'{seed_output} already exists but has no completed status marker. '
+                'Pass --overwrite to re-run from scratch, or review the partial run before removing it.'
+            )
 
     # Preserve the source CSV: enrichment writers in the multimodal workflow
     # operate on their input master-node file.
@@ -214,6 +236,7 @@ def main() -> None:
         use_target_encoder=True,
         use_protein_sequence_encoder=True,
         select_best_by='val',
+        resume_if_checkpoint_exists=has_completed_training,
     )
     (seed_output / 'seed_metrics.json').write_text(
         json.dumps(result, indent=2, sort_keys=True, default=lambda value: value.item() if hasattr(value, 'item') else str(value)),
