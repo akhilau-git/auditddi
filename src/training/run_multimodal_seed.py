@@ -13,6 +13,8 @@ from pathlib import Path
 import shutil
 import sys
 
+import pandas as pd
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -20,6 +22,35 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data_prep.path_resolver import resolve_data_base, resolve_results_base
 from src.training.benchmark_cold_start import ensure_benchmark_splits
 from src.training.train_multimodal_study import run_full_multimodal_study
+
+
+def _is_pair_edge_csv(path: Path | str | None) -> bool:
+    """Verify that a path points to an existing CSV with two identifiable drug endpoint columns."""
+    if path is None:
+        return False
+    p = Path(path)
+    if not p.is_file() or p.stat().st_size == 0:
+        return False
+    lower_name = p.name.lower()
+    # Reject non-edge tables (drug catalogs, node lists, feature matrices, summary tables)
+    if any(ex in lower_name for ex in ('_drugs.csv', '_nodes.csv', 'catalog', 'features', 'summary')):
+        return False
+    try:
+        header = pd.read_csv(p, nrows=2)
+        if len(header.columns) < 2:
+            return False
+        src_candidates = {
+            'drug_a_id', 'source', 'drug1_id', 'drug_a', 'drug1',
+            'stitch_id1', 'stitch 1', 'stitch1', 'drugbank_id1',
+        }
+        dst_candidates = {
+            'drug_b_id', 'target', 'drug2_id', 'drug_b', 'drug2',
+            'stitch_id2', 'stitch 2', 'stitch2', 'drugbank_id2',
+        }
+        cols_lower = {str(c).strip().lower() for c in header.columns}
+        return bool(src_candidates & cols_lower) and bool(dst_candidates & cols_lower)
+    except Exception:
+        return False
 
 
 def _first_existing(paths: list[Path]) -> Path | None:
@@ -69,34 +100,51 @@ def main() -> None:
 
     # Prefer the raw TWOSIDES pair table. A pre-filtered unified edge file may
     # contain only a tiny subset and must not silently become the benchmark.
-    twosides_dirs = [
-        path for path in (data_base / 'twosides', data_base / 'TWOSIDES', data_base / 'TwoSides')
-        if path.is_dir()
-    ]
-    recursive_twosides_csvs = sorted(
-        (
-            path for folder in twosides_dirs for path in folder.rglob('*.csv')
-            if 'twosides' in path.name.lower() or path.name.lower() == 'drug_drug_edges.csv'
-        ),
-        key=lambda path: (
-            0 if 'twosides' in path.name.lower() else 1,
-            0 if path.name.lower() == 'twosides.csv' else 1,
-            str(path).lower(),
-        ),
-    )
-    edges = args.edges or _first_existing([
-        data_base / 'twosides' / 'twosides.csv',
-        data_base / 'TWOSIDES' / 'twosides.csv',
-        *recursive_twosides_csvs,
-        data_base / 'twosides' / 'drug_drug_edges.csv',
-        data_base / 'TWOSIDES' / 'drug_drug_edges.csv',
-        data_base / 'TwoSides' / 'drug_drug_edges.csv',
-        data_base / 'unified_graph' / 'master_ddi_edges.csv',
-        results_base / 'unified_graph' / 'master_ddi_edges.csv',
-    ])
+    edges = args.edges
+    if edges is not None:
+        if not edges.is_file():
+            raise FileNotFoundError(f"Specified --edges file does not exist: {edges}")
+        if not _is_pair_edge_csv(edges):
+            header_sample = pd.read_csv(edges, nrows=2)
+            raise ValueError(
+                f"Specified --edges file ({edges}) does not contain two identifiable drug endpoint columns. "
+                f"Columns found: {header_sample.columns.tolist()}. Pass a pair-level interaction CSV."
+            )
+    else:
+        standard_candidates = [
+            data_base / 'twosides' / 'drug_drug_edges.csv',
+            data_base / 'TWOSIDES' / 'drug_drug_edges.csv',
+            data_base / 'TwoSides' / 'drug_drug_edges.csv',
+            data_base / 'twosides' / 'twosides.csv',
+            data_base / 'TWOSIDES' / 'twosides.csv',
+            data_base / 'TwoSides' / 'twosides.csv',
+            data_base / 'unified_graph' / 'master_ddi_edges.csv',
+            results_base / 'unified_graph' / 'master_ddi_edges.csv',
+        ]
+        edges = next((p for p in standard_candidates if _is_pair_edge_csv(p)), None)
+
+        if edges is None:
+            twosides_dirs = [
+                path for path in (data_base / 'twosides', data_base / 'TWOSIDES', data_base / 'TwoSides')
+                if path.is_dir()
+            ]
+            recursive_candidates = [
+                path for folder in twosides_dirs for path in folder.rglob('*.csv')
+                if _is_pair_edge_csv(path)
+            ]
+            if recursive_candidates:
+                recursive_candidates.sort(key=lambda p: (
+                    0 if 'drug_drug_edges' in p.name.lower() else (
+                        1 if 'pair' in p.name.lower() or 'edge' in p.name.lower() else 2
+                    ),
+                    len(str(p)),
+                ))
+                edges = recursive_candidates[0]
+
     if edges is None or not edges.is_file():
         raise FileNotFoundError(
-            'Could not find TWOSIDES or unified DDI edges. Pass --edges with its Google Drive path.'
+            'Could not find TWOSIDES or unified DDI edges with pair endpoints. '
+            'Pass --edges with its Google Drive path (e.g. /content/drive/MyDrive/.../drug_drug_edges.csv).'
         )
 
     output_root = args.output_dir or (results_base / 'multimodal_seed_study_v2')
