@@ -78,6 +78,7 @@ def test_multimodal_study_smoke():
             ablation_epochs=1,
             batch_size=4,
             device=torch.device("cpu"),
+            min_examples_per_class=2,
         )
 
         assert "extended_metrics" in res

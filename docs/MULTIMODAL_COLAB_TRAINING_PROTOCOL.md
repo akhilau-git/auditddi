@@ -29,11 +29,16 @@ is recorded, but its full-history score is disabled as a primary DDI input.
 ## Training and test boundaries
 
 1. Resolve each drug to one canonical structure and stable identifiers before
-   joining source tables. Save unmatched and ambiguous rows for review.
+   joining source tables. The split builder now maps source identifiers to the
+   exact master `drug_id` used by the molecular cache, drops ambiguous aliases,
+   and records unmatched counts. Save unmatched rows for review.
 2. Build one enriched master-node snapshot. Each node contains the features
    available for that drug plus explicit source/missingness masks.
 3. Build the TWOSIDES pair labels, remove conflicting or duplicate unordered
    pairs, then create split-aware negatives. Save exact split CSVs and hashes.
+   The Colab launcher requires at least 50 positives and 50 sampled negatives
+   in every train, development, and test partition, and stops before training
+   if any split is empty or undersized. Do not lower this guard to force a run.
 4. Fit the DDI model on training pairs only. Select the checkpoint using the
    mean AUROC across transductive validation, S1-dev, and S2-dev. Select each
    split's classification threshold using its matching validation/dev data.
@@ -66,28 +71,41 @@ keeps a source snapshot, reuses the same split directory, and writes separate
 `seed_<number>` folders. A completed seed is left untouched if the command is
 run again.
 
+Start a fresh study under a new v2 folder so the invalid tiny split files and
+completed seeds from the earlier run are not reused. First run the preflight;
+it chooses the TWOSIDES file before a prefiltered unified edge file and prints
+the class counts for each partition:
+
+```bash
+!python src/training/run_multimodal_seed.py --prepare-only --seed 11 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
+```
+
+If the file resolver chooses the wrong edge CSV, pass the full raw TWOSIDES
+path with `--edges` and the enriched node CSV with `--master-nodes`. Check the
+preflight's resolved edge path and split counts before training.
+
 In Colab, mount the Drive folder that contains the repository and datasets,
 select a GPU runtime, then run one seed:
 
 ```bash
-!python src/training/run_multimodal_seed.py --seed 11 --split-seed 42 --epochs 200
+!python src/training/run_multimodal_seed.py --seed 11 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
 ```
 
 Run the other seeds in separate sessions/accounts, keeping `--split-seed 42`
 and the shared output folder fixed:
 
 ```bash
-!python src/training/run_multimodal_seed.py --seed 23 --split-seed 42 --epochs 200
-!python src/training/run_multimodal_seed.py --seed 37 --split-seed 42 --epochs 200
-!python src/training/run_multimodal_seed.py --seed 53 --split-seed 42 --epochs 200
-!python src/training/run_multimodal_seed.py --seed 71 --split-seed 42 --epochs 200
+!python src/training/run_multimodal_seed.py --seed 23 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
+!python src/training/run_multimodal_seed.py --seed 37 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
+!python src/training/run_multimodal_seed.py --seed 53 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
+!python src/training/run_multimodal_seed.py --seed 71 --split-seed 42 --epochs 200 --holdout-fraction 0.30 --minimum-per-class 50 --output-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2
 ```
 
 After all selected seed folders are present in the shared Drive folder, aggregate
 them only after the script confirms matching master-node and split hashes:
 
 ```bash
-!python src/training/summarize_multimodal_seeds.py --study-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study --seeds 11 23 37 53 71
+!python src/training/summarize_multimodal_seeds.py --study-dir /content/drive/MyDrive/auditddi-results/multimodal_seed_study_v2 --seeds 11 23 37 53 71
 ```
 
 The summary writes seed-level metrics to `multimodal_seed_metrics.csv` and

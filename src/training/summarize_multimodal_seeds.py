@@ -12,7 +12,8 @@ import pandas as pd
 
 SPLITS = ('transductive', 's1_cold', 's2_semi')
 METRICS = (
-    'auroc', 'auprc', 'mcc', 'accuracy', 'f1', 'recall', 'specificity', 'brier',
+    'auroc', 'auprc', 'mcc', 'accuracy', 'balanced_accuracy', 'f1',
+    'recall', 'specificity', 'brier',
 )
 
 
@@ -48,7 +49,7 @@ def main() -> None:
 
     reference = manifests[0]
     for manifest in manifests[1:]:
-        for key in ('split_seed', 'master_nodes_sha256', 'split_sha256'):
+        for key in ('split_seed', 'master_nodes_sha256', 'split_sha256', 'split_audit_sha256'):
             if manifest.get(key) != reference.get(key):
                 raise ValueError(f'Seed runs do not share identical {key}; refusing to aggregate.')
 

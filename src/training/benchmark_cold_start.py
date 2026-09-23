@@ -15,8 +15,10 @@ Tracks:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -65,12 +67,175 @@ REQUIRED_SPLIT_FILES = [
 ]
 
 
+def _collect_aliases(value: Any) -> set[str]:
+    """Collect stable scalar aliases, including values nested in JSON fields."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return set()
+    if isinstance(value, dict):
+        aliases: set[str] = set()
+        for nested in value.values():
+            aliases.update(_collect_aliases(nested))
+        return aliases
+    if isinstance(value, (list, tuple, set)):
+        aliases: set[str] = set()
+        for nested in value:
+            aliases.update(_collect_aliases(nested))
+        return aliases
+    text = str(value).strip()
+    if not text or text.lower() in {'nan', 'none', 'null'}:
+        return set()
+    if text[:1] in {'{', '['}:
+        try:
+            return _collect_aliases(json.loads(text))
+        except (TypeError, ValueError):
+            pass
+    return {text}
+
+
+def _map_edges_to_master_ids(
+    pairs: pd.DataFrame, nodes: pd.DataFrame, source_col: str, target_col: str
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Map source identifiers to the exact node keys used by MolecularCache.
+
+    Ambiguous aliases are discarded rather than guessed. This prevents a
+    source ID/name from being treated as a molecular graph key by accident.
+    """
+    node_id_col = 'drug_id' if 'drug_id' in nodes.columns else (
+        'canonical_smiles' if 'canonical_smiles' in nodes.columns else nodes.columns[0]
+    )
+    alias_cols = [
+        col for col in (
+            node_id_col, 'drug_id', 'canonical_smiles', 'inchikey', 'pubchem_cid',
+            'display_name', 'drug_name', 'source_ids', 'source_ids_json',
+            'synonyms', 'synonyms_json',
+        ) if col in nodes.columns
+    ]
+    alias_to_ids: dict[str, set[str]] = {}
+    folded_alias_to_ids: dict[str, set[str]] = {}
+
+    def external_alias_keys(alias: str) -> set[str]:
+        keys = {alias.casefold()}
+        # TWOSIDES/STITCH commonly prefixes PubChem CIDs with zero padding.
+        # Normalize only the unambiguous CID form; leave CIDm stereochemical
+        # identifiers untouched instead of collapsing distinct compounds.
+        cid_match = re.fullmatch(r'CID0*(\d+)', alias, flags=re.IGNORECASE)
+        if cid_match:
+            keys.add(cid_match.group(1).lstrip('0') or '0')
+        numeric_match = re.fullmatch(r'(\d+)(?:\.0+)?', alias)
+        if numeric_match:
+            keys.add(numeric_match.group(1).lstrip('0') or '0')
+        return keys
+
+    for _, row in nodes.iterrows():
+        node_id = str(row[node_id_col]).strip()
+        if not node_id or node_id.lower() == 'nan':
+            continue
+        aliases = {node_id}
+        if 'canonical_smiles' in nodes.columns:
+            aliases.update(_collect_aliases(row['canonical_smiles']))
+        for alias in aliases:
+            alias_to_ids.setdefault(alias, set()).add(node_id)
+        for col in alias_cols:
+            if col in {node_id_col, 'canonical_smiles'}:
+                continue
+            for alias in _collect_aliases(row[col]):
+                for key in external_alias_keys(alias):
+                    folded_alias_to_ids.setdefault(key, set()).add(node_id)
+
+    unambiguous = {
+        alias: next(iter(node_ids))
+        for alias, node_ids in alias_to_ids.items()
+        if len(node_ids) == 1
+    }
+    folded_unambiguous = {
+        alias: next(iter(node_ids))
+        for alias, node_ids in folded_alias_to_ids.items()
+        if len(node_ids) == 1
+    }
+    def resolve_endpoint(value: Any) -> str | None:
+        text = str(value).strip()
+        if text in unambiguous:
+            return unambiguous[text]
+        matched_ids = {
+            folded_unambiguous[key]
+            for key in external_alias_keys(text)
+            if key in folded_unambiguous
+        }
+        return next(iter(matched_ids)) if len(matched_ids) == 1 else None
+
+    mapped_a = pairs[source_col].map(resolve_endpoint)
+    mapped_b = pairs[target_col].map(resolve_endpoint)
+    matched = mapped_a.notna() & mapped_b.notna()
+    result = pd.DataFrame({
+        'drug_a_id': mapped_a[matched].values,
+        'drug_b_id': mapped_b[matched].values,
+    })
+    audit = {
+        'master_node_rows': int(len(nodes)),
+        'unambiguous_aliases': int(len(unambiguous) + len(folded_unambiguous)),
+        'ambiguous_aliases_excluded': int(
+            sum(len(ids) > 1 for ids in alias_to_ids.values())
+            + sum(len(ids) > 1 for ids in folded_alias_to_ids.values())
+        ),
+        'raw_edge_rows': int(len(pairs)),
+        'edge_rows_with_both_drugs_mapped': int(matched.sum()),
+        'unmapped_edge_rows': int((~matched).sum()),
+        'unique_mapped_positive_pairs': int(result.shape[0]),
+    }
+    return result, audit
+
+
+def _check_minimum_split_support(
+    splits_path: Path, min_examples_per_class: int
+) -> dict[str, dict[str, int]]:
+    """Reject empty/tiny partitions before model training or score reporting."""
+    counts: dict[str, dict[str, int]] = {}
+    failures: list[str] = []
+    for filename in REQUIRED_SPLIT_FILES:
+        path = splits_path / filename
+        if not path.is_file():
+            failures.append(f'{filename}: missing')
+            continue
+        frame = pd.read_csv(path)
+        if 'label' not in frame.columns:
+            failures.append(f'{filename}: missing label column')
+            continue
+        labels = pd.to_numeric(frame['label'], errors='coerce')
+        positive = int((labels == 1).sum())
+        negative = int((labels == 0).sum())
+        counts[filename] = {'rows': int(len(frame)), 'positive': positive, 'negative': negative}
+        if positive < min_examples_per_class or negative < min_examples_per_class:
+            failures.append(
+                f'{filename}: positive={positive}, negative={negative} '
+                f'(need at least {min_examples_per_class} of each)'
+            )
+    if failures:
+        formatted = '\n  - '.join(failures)
+        raise ValueError(
+            'The DDI source or split is too small for a meaningful leakage-safe '
+            'benchmark; training was stopped before starting.\n  - ' + formatted +
+            '\nUse the full TWOSIDES pair file, confirm its drug IDs map to the '
+            'master-node identifiers, then generate a fresh split/output folder. '
+            'Do not lower this threshold merely to make the run proceed.'
+        )
+    return counts
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def ensure_benchmark_splits(
     splits_dir: str | Path | None = None,
     master_nodes_path: str | Path | None = None,
     master_edges_path: str | Path | None = None,
     seed: int = 42,
     holdout_fraction: float = 0.15,
+    min_examples_per_class: int = 2,
     **kwargs: Any,
 ) -> Path:
     """Ensure benchmark splits exist; generate them automatically if missing.
@@ -105,8 +270,11 @@ def ensure_benchmark_splits(
         f for f in REQUIRED_SPLIT_FILES
         if (splits_path / f).is_file() and (splits_path / f).stat().st_size > 0
     ]
+    if min_examples_per_class < 2:
+        raise ValueError('min_examples_per_class must be at least 2.')
     if len(existing_files) == len(REQUIRED_SPLIT_FILES):
         print(f"Using existing benchmark splits from: {splits_path}")
+        _check_minimum_split_support(splits_path, min_examples_per_class)
         return splits_path
 
     print(f"Benchmark split files missing in {splits_path}. Auto-generating leakage-safe splits...")
@@ -142,19 +310,23 @@ def ensure_benchmark_splits(
     print(f"Loading positive interaction pairs from: {resolved_edges}")
     header_sample = pd.read_csv(resolved_edges, nrows=2)
 
-    src_col = 'drug_a_id'
-    if src_col not in header_sample.columns:
-        for cand in ['source', 'drug1_id', 'drug_a']:
-            if cand in header_sample.columns:
-                src_col = cand
-                break
+    def choose_endpoint(candidates: tuple[str, ...]) -> str | None:
+        return next((name for name in candidates if name in header_sample.columns), None)
 
-    dst_col = 'drug_b_id'
-    if dst_col not in header_sample.columns:
-        for cand in ['target', 'drug2_id', 'drug_b']:
-            if cand in header_sample.columns:
-                dst_col = cand
-                break
+    src_col = choose_endpoint((
+        'drug_a_id', 'source', 'drug1_id', 'drug_a', 'drug1',
+        'stitch_id1', 'STITCH 1', 'stitch1', 'drugbank_id1', 'Drug1',
+    ))
+    dst_col = choose_endpoint((
+        'drug_b_id', 'target', 'drug2_id', 'drug_b', 'drug2',
+        'stitch_id2', 'STITCH 2', 'stitch2', 'drugbank_id2', 'Drug2',
+    ))
+    if src_col is None or dst_col is None:
+        raise ValueError(
+            f'Cannot identify the two drug columns in {resolved_edges}. '
+            f'Columns found: {header_sample.columns.tolist()}. Pass a pair-level '
+            'TWOSIDES CSV with identifiable drug endpoint columns.'
+        )
 
     df_raw = pd.read_csv(resolved_edges, usecols=[src_col, dst_col], low_memory=False)
 
@@ -163,24 +335,31 @@ def ensure_benchmark_splits(
         columns={src_col: 'drug_a_id', dst_col: 'drug_b_id'}
     )
 
-    # If master nodes given, filter pairs to registered nodes only
+    # Map TWOSIDES/source aliases onto the exact drug_id used as MolecularCache's
+    # graph key. Merely checking that an alias exists in the node table is not
+    # enough: the model would otherwise look up a DrugBank ID as if it were SMILES.
+    mapping_audit: dict[str, int] = {}
     if master_nodes_path is not None and Path(master_nodes_path).is_file():
         nodes_df = pd.read_csv(master_nodes_path)
-        valid_nodes: set[str] = set()
-        for col in ('drug_id', 'canonical_smiles', 'inchikey', 'drug_name', 'pubchem_cid'):
-            if col in nodes_df.columns:
-                valid_nodes.update(nodes_df[col].dropna().astype(str).str.strip())
-        if not valid_nodes:
-            valid_nodes = set(nodes_df.iloc[:, 0].dropna().astype(str).str.strip())
-        before_cnt = len(pairs_df)
-        pairs_df = pairs_df[
-            pairs_df['drug_a_id'].astype(str).str.strip().isin(valid_nodes)
-            & pairs_df['drug_b_id'].astype(str).str.strip().isin(valid_nodes)
-        ].reset_index(drop=True)
-        if len(pairs_df) < before_cnt:
-            print(f"Filtered pairs against master nodes: {len(pairs_df):,} of {before_cnt:,} pairs retained.")
+        pairs_df, mapping_audit = _map_edges_to_master_ids(
+            pairs_df, nodes_df, 'drug_a_id', 'drug_b_id'
+        )
+        pairs_df = pairs_df.drop_duplicates().reset_index(drop=True)
+        print(
+            'Mapped DDI edge endpoints to master drug keys: '
+            f"{mapping_audit['edge_rows_with_both_drugs_mapped']:,}/"
+            f"{mapping_audit['raw_edge_rows']:,} rows; "
+            f"{len(pairs_df):,} unique pairs."
+        )
 
     print(f"Constructing leakage-safe splits across {len(pairs_df):,} unique positive drug pairs...")
+    if len(pairs_df) < min_examples_per_class * 2:
+        raise ValueError(
+            f'Only {len(pairs_df):,} unique positive DDI pairs map to the master '
+            f'drug catalog; at least {min_examples_per_class * 2:,} are required '
+            'even for the smallest meaningful partition. Check that --edges points '
+            'to the full TWOSIDES pair file and that its IDs can map to master nodes.'
+        )
     splits, audit = create_split_aware_binary_splits(
         positive_pairs=pairs_df,
         known_reported_positive_pairs=pairs_df,
@@ -192,6 +371,38 @@ def ensure_benchmark_splits(
         allow_zero_negatives=kwargs.get('allow_zero_negatives', False),
     )
 
+    audit['source'] = {
+        'edge_file': str(Path(resolved_edges).resolve()),
+        'edge_file_sha256': _sha256_file(Path(resolved_edges)),
+        'master_nodes_file': str(Path(master_nodes_path).resolve()) if master_nodes_path else None,
+        'master_nodes_file_sha256': (
+            _sha256_file(Path(master_nodes_path))
+            if master_nodes_path and Path(master_nodes_path).is_file() else None
+        ),
+        'identifier_mapping': mapping_audit,
+    }
+    audit['minimum_examples_per_class'] = min_examples_per_class
+    audit['split_counts'] = {
+        f'{name}.csv': {
+            'rows': int(len(frame)),
+            'positive': int((frame['label'] == 1).sum()),
+            'negative': int((frame['label'] == 0).sum()),
+        }
+        for name, frame in splits.items()
+    }
+    failures = [
+        f'{name}: positive={counts["positive"]}, negative={counts["negative"]}'
+        for name, counts in audit['split_counts'].items()
+        if counts['positive'] < min_examples_per_class or counts['negative'] < min_examples_per_class
+    ]
+    if failures:
+        raise ValueError(
+            'Split construction produced partitions too small for evaluation; '
+            'no split files were written and training must not proceed.\n  - ' +
+            '\n  - '.join(failures) +
+            '\nUse the full interaction dataset and verify drug identity mappings.'
+        )
+
     for name, df in splits.items():
         out_file = splits_path / f'{name}.csv'
         df.to_csv(out_file, index=False)
@@ -199,6 +410,7 @@ def ensure_benchmark_splits(
 
     audit_path = splits_path / 'split_audit.json'
     audit_path.write_text(json.dumps(audit, indent=2), encoding='utf-8')
+    _check_minimum_split_support(splits_path, min_examples_per_class)
     print(f"All benchmark splits successfully written to: {splits_path}")
     return splits_path
 

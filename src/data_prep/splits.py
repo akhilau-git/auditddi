@@ -233,9 +233,15 @@ def _cold_start_groups(
 ) -> dict[str, set[str]]:
     """Choose deterministic seen, S1-dev, and S1-test drug identities."""
     all_drugs = pd.unique(dataframe[[drug_a_col, drug_b_col]].to_numpy().ravel())
-    if len(all_drugs) < 3:
-        raise ValueError('At least three distinct drugs are required for cold-start splits.')
-    holdout_count = max(1, round(holdout_fraction * len(all_drugs)))
+    if len(all_drugs) < 6:
+        raise ValueError(
+            'At least six distinct drugs are required to form separate S1-dev '
+            'and S1-test groups while retaining seen training drugs.'
+        )
+    # S1 requires pairs whose two endpoints are both inside one held-out group.
+    # A 1-drug group can never contain a pair, so ensure at least two drug
+    # identities in each of the development and test groups.
+    holdout_count = max(4, round(holdout_fraction * len(all_drugs)))
     holdout_count = min(holdout_count, len(all_drugs) - 2)
     rng = np.random.default_rng(seed)
     holdout_drugs = rng.choice(all_drugs, size=holdout_count, replace=False)

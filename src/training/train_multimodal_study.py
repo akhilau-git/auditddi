@@ -116,28 +116,18 @@ def evaluate_predictions(
     threshold: float | str = 'optimal',
 ) -> dict[str, float]:
     """Compute comprehensive performance metrics with optimal or specified threshold."""
-    if len(np.unique(targets)) < 2:
-        return {
-            'auroc': 0.5,
-            'auprc': float(np.mean(targets)) if len(targets) else 0.0,
-            'f1': 0.0,
-            'accuracy': 0.5,
-            'mcc': 0.0,
-            'brier': 0.25,
-            'optimal_threshold': 0.5,
-            'false_negatives': 0,
-            'false_positives': 0,
-            'true_positives': 0,
-            'true_negatives': 0,
-            'fnr': 0.0,
-            'fpr': 0.0,
-        }
+    if len(targets) == 0 or len(np.unique(targets)) < 2:
+        raise ValueError(
+            'Cannot report classification metrics for an empty or single-class '
+            'split. Rebuild the benchmark with adequate positive and negative examples.'
+        )
 
     auroc = float(roc_auc_score(targets, scores))
     auprc = float(average_precision_score(targets, scores))
     brier = float(brier_score_loss(targets, scores))
 
-    if threshold == 'optimal' or threshold is None:
+    optimized_on_this_data = threshold == 'optimal' or threshold is None
+    if optimized_on_this_data:
         try:
             fpr_arr, tpr_arr, thresh_arr = roc_curve(targets, scores)
             # Cost-sensitive Youden index matching pos_weight=2.0 (penalty: -2 FN / -1 FP)
@@ -168,7 +158,7 @@ def evaluate_predictions(
     sensitivity = recall
     specificity = float(tn / max(neg_mask.sum(), 1))
 
-    return {
+    metrics = {
         'auroc': auroc,
         'auprc': auprc,
         'accuracy': acc,
@@ -178,7 +168,8 @@ def evaluate_predictions(
         'recall': recall,
         'sensitivity': sensitivity,
         'specificity': specificity,
-        'optimal_threshold': opt_thresh,
+        'balanced_accuracy': float((recall + specificity) / 2.0),
+        'threshold_used': opt_thresh,
         'false_negatives': fn,
         'false_positives': fp,
         'true_positives': tp,
@@ -186,6 +177,12 @@ def evaluate_predictions(
         'fnr': fnr,
         'fpr': fpr,
     }
+    # Only call this an optimal threshold when it was actually selected from
+    # the current non-test development predictions. Test evaluation receives
+    # a frozen numeric threshold and must not expose a test-tuned threshold.
+    if optimized_on_this_data:
+        metrics['optimal_threshold'] = opt_thresh
+    return metrics
 
 
 def train_extended_multimodal(
@@ -1273,6 +1270,7 @@ def run_full_multimodal_study(
     bio_align_weight: float = float(kwargs.pop('bio_align_weight', 0.25))
     embedding_noise_std: float = float(kwargs.pop('embedding_noise_std', 0.02))
     patience: int = int(kwargs.pop('patience', 8))
+    min_examples_per_class: int = int(kwargs.pop('min_examples_per_class', 50))
     model_seed = int(kwargs.pop('seed', os.environ.get('AUDITDDI_MODEL_SEED', '42')))
     split_seed = int(kwargs.pop('split_seed', os.environ.get('AUDITDDI_SPLIT_SEED', '42')))
     if model_seed <= 0 or split_seed <= 0:
@@ -1300,6 +1298,7 @@ def run_full_multimodal_study(
         master_nodes_path=master_nodes_path,
         master_edges_path=master_edges_path,
         seed=split_seed,
+        min_examples_per_class=min_examples_per_class,
         **kwargs,
     )
 
@@ -1454,6 +1453,11 @@ def run_full_multimodal_study(
         for path in sorted(splits_p.glob('*.csv'))
         if path.name in {'transductive_train.csv', 'validation.csv', 'transductive_test.csv', 's1_dev.csv', 's2_dev.csv', 's1_test.csv', 's2_test.csv'}
     }
+    split_audit_path = splits_p / 'split_audit.json'
+    split_audit = (
+        json.loads(split_audit_path.read_text(encoding='utf-8'))
+        if split_audit_path.is_file() else {}
+    )
     input_manifest = {
         'model_seed': model_seed,
         'split_seed': split_seed,
@@ -1461,6 +1465,8 @@ def run_full_multimodal_study(
         'master_nodes_sha256': sha256_file(Path(master_nodes_path)),
         'split_directory': str(splits_p.resolve()),
         'split_sha256': split_hashes,
+        'split_audit_sha256': sha256_file(split_audit_path) if split_audit_path.is_file() else None,
+        'ddi_edge_source': split_audit.get('source'),
         'epochs': extended_epochs,
         'batch_size': batch_size,
         'evaluation_policy': 'checkpoint_selected_by_macro_auroc_on_transductive_validation_s1_dev_s2_dev; per_split_thresholds_selected_on_matching_dev; test_only_after_selection',
@@ -1527,6 +1533,8 @@ def run_full_multimodal_study(
     frames_by_split = {
         'train': train_df,
         'validation': val_df,
+        's1_dev': cold_dev_splits['s1_dev'],
+        's2_dev': cold_dev_splits['s2_dev'],
         'transductive_test': test_splits['transductive'],
         's1_test': test_splits['s1_cold'],
         's2_test': test_splits['s2_semi'],
