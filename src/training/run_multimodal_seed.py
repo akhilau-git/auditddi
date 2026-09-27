@@ -173,7 +173,15 @@ def main() -> None:
         except Exception:
             has_completed_training = False
 
-    if seed_output.exists():
+    is_empty_or_scratch = False
+    if seed_output.is_dir():
+        meaningful_files = [
+            f for f in seed_output.iterdir()
+            if f.name not in ('.ipynb_checkpoints', '.DS_Store', 'desktop.ini', '__pycache__')
+        ]
+        is_empty_or_scratch = (len(meaningful_files) == 0)
+
+    if seed_output.exists() and not is_empty_or_scratch:
         if args.overwrite:
             print(f"--overwrite specified: clearing existing output folder {seed_output}...")
             shutil.rmtree(seed_output)
@@ -185,6 +193,8 @@ def main() -> None:
                 f'{seed_output} already exists but has no completed status marker. '
                 'Pass --overwrite to re-run from scratch, or review the partial run before removing it.'
             )
+    elif seed_output.exists() and is_empty_or_scratch:
+        shutil.rmtree(seed_output, ignore_errors=True)
 
     # Preserve the source CSV: enrichment writers in the multimodal workflow
     # operate on their input master-node file.
