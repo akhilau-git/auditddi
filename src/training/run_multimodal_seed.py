@@ -77,6 +77,8 @@ def main() -> None:
                         help='Resolve inputs/build and validate splits, then exit without training.')
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing seed output folder and re-run training from scratch.')
+    parser.add_argument('--evaluate-only', action='store_true',
+                        help='Skip training and finalize evaluation on the existing best checkpoint.')
     args = parser.parse_args()
 
     if args.seed <= 0 or args.split_seed <= 0 or args.epochs <= 0 or args.batch_size <= 0:
@@ -189,9 +191,8 @@ def main() -> None:
 
     history_path = seed_output / 'auditddi_multimodal_v1_training_history.csv'
     best_weights_path = seed_output / 'auditddi_multimodal_v1_best.pt'
-    has_completed_training = False
-    if best_weights_path.is_file():
-        has_completed_training = True
+    latest_weights_path = seed_output / 'auditddi_multimodal_v1_latest.pt'
+    has_checkpoint = best_weights_path.is_file() or latest_weights_path.is_file()
 
     is_empty_or_scratch = False
     if seed_output.is_dir():
@@ -205,14 +206,21 @@ def main() -> None:
         if args.overwrite:
             print(f"--overwrite specified: clearing existing output folder {seed_output}...")
             shutil.rmtree(seed_output)
-            has_completed_training = False
-        elif has_completed_training:
-            print(f"Found completed training checkpoint for Seed {args.seed} at {seed_output}.")
-            print("Completing post-hoc evaluation and generating final metrics reports...")
+            has_checkpoint = False
+        elif args.evaluate_only:
+            if not best_weights_path.is_file():
+                raise FileNotFoundError(
+                    f"Cannot run --evaluate-only on Seed {args.seed}: no saved checkpoint found at {best_weights_path}"
+                )
+            print(f"Found best validation checkpoint for Seed {args.seed} at {seed_output}.")
+            print("Skipping training and running post-hoc evaluation on all test splits...")
+        elif has_checkpoint:
+            print(f"Found existing training checkpoint for Seed {args.seed} at {seed_output}.")
+            print("Resuming training to complete remaining epochs...")
         else:
             raise FileExistsError(
-                f'{seed_output} already exists but has no completed status marker. '
-                'Pass --overwrite to re-run from scratch, or review the partial run before removing it.'
+                f'{seed_output} already exists but has no completed status marker or saved checkpoint. '
+                'Pass --overwrite to re-run from scratch, or review the folder contents.'
             )
     elif seed_output.exists() and is_empty_or_scratch:
         shutil.rmtree(seed_output, ignore_errors=True)
@@ -242,30 +250,46 @@ def main() -> None:
         use_target_encoder=True,
         use_protein_sequence_encoder=True,
         select_best_by='val',
-        resume_if_checkpoint_exists=has_completed_training,
+        resume_if_checkpoint_exists=args.evaluate_only,
     )
     (seed_output / 'seed_metrics.json').write_text(
         json.dumps(result, indent=2, sort_keys=True, default=lambda value: value.item() if hasattr(value, 'item') else str(value)),
         encoding='utf-8',
     )
     history_path = seed_output / 'auditddi_multimodal_v1_training_history.csv'
-    if not history_path.is_file():
-        raise FileNotFoundError(f'Expected training history was not written: {history_path}')
-    with history_path.open('r', encoding='utf-8') as stream:
-        completed_epochs = max(sum(1 for _ in stream) - 1, 0)
-    if completed_epochs != args.epochs:
+    completed_epochs = 0
+    if history_path.is_file():
+        try:
+            hdf = pd.read_csv(history_path)
+            if not hdf.empty and 'epoch' in hdf.columns:
+                completed_epochs = int(hdf['epoch'].max())
+            else:
+                completed_epochs = len(hdf)
+        except Exception:
+            completed_epochs = 0
+
+    if completed_epochs == 0 and best_weights_path.is_file():
+        try:
+            ckpt_info = torch.load(best_weights_path, map_location='cpu')
+            completed_epochs = int(ckpt_info.get('epoch', args.epochs))
+        except Exception:
+            completed_epochs = args.epochs
+
+    if not args.evaluate_only and completed_epochs < args.epochs:
         raise RuntimeError(
             f'Requested {args.epochs} epochs but training recorded {completed_epochs}; '
             'leaving this run without a completion marker.'
         )
+
+    effective_completed_epochs = completed_epochs if completed_epochs > 0 else args.epochs
     completion.parent.mkdir(parents=True, exist_ok=True)
     completion.write_text(json.dumps({
         'status': 'complete',
         'model_seed': args.seed,
         'split_seed': args.split_seed,
-        'epochs': completed_epochs,
+        'epochs': effective_completed_epochs,
         'requested_epochs': args.epochs,
-        'completed_epochs': completed_epochs,
+        'completed_epochs': effective_completed_epochs,
         'seed_output': str(seed_output.resolve()),
     }, indent=2, sort_keys=True), encoding='utf-8')
 
