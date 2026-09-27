@@ -153,6 +153,32 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     split_dir = args.splits_dir or (output_root / f'fixed_splits_seed_{args.split_seed}')
     split_dir = Path(split_dir)
+    # Preserve the source CSV: enrichment writers in the multimodal workflow
+    # operate on their input master-node file.
+    snapshot = output_root / 'input_snapshot' / 'master_drug_nodes.csv'
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    if not snapshot.exists():
+        shutil.copy2(nodes, snapshot)
+
+    split_dir.mkdir(parents=True, exist_ok=True)
+    ensure_benchmark_splits(
+        splits_dir=split_dir,
+        master_nodes_path=snapshot,
+        master_edges_path=edges,
+        seed=args.split_seed,
+        holdout_fraction=args.holdout_fraction,
+        min_examples_per_class=args.minimum_per_class,
+    )
+
+    if args.prepare_only:
+        audit_path = split_dir / 'split_audit.json'
+        audit = json.loads(audit_path.read_text(encoding='utf-8'))
+        print(f"Input preflight succeeded. TWOSIDES edge file: {edges}")
+        print(f"Validated splits: {split_dir}")
+        print(json.dumps(audit.get('split_counts', {}), indent=2))
+        return
+
+    # Seed-specific training setup
     seed_output = output_root / f'seed_{args.seed}'
     completion = seed_output / 'seed_execution_status.json'
     if completion.is_file() and not args.overwrite:
@@ -195,31 +221,6 @@ def main() -> None:
             )
     elif seed_output.exists() and is_empty_or_scratch:
         shutil.rmtree(seed_output, ignore_errors=True)
-
-    # Preserve the source CSV: enrichment writers in the multimodal workflow
-    # operate on their input master-node file.
-    snapshot = output_root / 'input_snapshot' / 'master_drug_nodes.csv'
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
-    if not snapshot.exists():
-        shutil.copy2(nodes, snapshot)
-
-    split_dir.mkdir(parents=True, exist_ok=True)
-    ensure_benchmark_splits(
-        splits_dir=split_dir,
-        master_nodes_path=snapshot,
-        master_edges_path=edges,
-        seed=args.split_seed,
-        holdout_fraction=args.holdout_fraction,
-        min_examples_per_class=args.minimum_per_class,
-    )
-
-    if args.prepare_only:
-        audit_path = split_dir / 'split_audit.json'
-        audit = json.loads(audit_path.read_text(encoding='utf-8'))
-        print(f"Input preflight succeeded. TWOSIDES edge file: {edges}")
-        print(f"Validated splits: {split_dir}")
-        print(json.dumps(audit.get('split_counts', {}), indent=2))
-        return
 
     os.environ['AUDITDDI_MODEL_SEED'] = str(args.seed)
     os.environ['AUDITDDI_SPLIT_SEED'] = str(args.split_seed)
