@@ -331,8 +331,25 @@ def train_extended_multimodal(
         use_protein_sequence_encoder=is_multimodal and bool(kwargs.get('use_protein_sequence_encoder', False)),
     )
 
+    best_weights_path = out_p / f'{architecture_version}_best.pt'
+    history_file = out_p / f'{architecture_version}_training_history.csv'
+
+    resume_eval = bool(kwargs.get('resume_if_checkpoint_exists', False))
+    skip_training = False
+    history_df: pd.DataFrame | None = None
+    if resume_eval and best_weights_path.is_file():
+        try:
+            if history_file.is_file():
+                history_df = pd.read_csv(history_file)
+            print(f"\n[RESUME] Found existing trained checkpoint at: {best_weights_path}")
+            print("Skipping encoder warm-up and training loop; proceeding directly to post-hoc evaluation...")
+            skip_training = True
+        except Exception as e:
+            print(f"Notice: unable to load existing history for resume: {e}")
+            skip_training = False
+
     encoder_warmed = False
-    if not encoder_warmed and hasattr(model, 'encoder'):
+    if not skip_training and not encoder_warmed and hasattr(model, 'encoder'):
         from src.models.encoder import EdgeAwareMolecularEncoder
         from src.models.encoder_pretraining import (
             EdgeAwareContrastivePretrainer,
@@ -376,49 +393,33 @@ def train_extended_multimodal(
 
     model = model.to(device)
 
-    if encoder_warmed:
-        encoder_params = list(model.encoder.parameters())
-        other_params = [p for n, p in model.named_parameters() if not n.startswith('encoder.')]
-        optimizer = AdamW([
-            {'params': encoder_params, 'lr': learning_rate * 0.1},
-            {'params': other_params, 'lr': learning_rate},
-        ], weight_decay=weight_decay)
-        print(f"Discriminative LR: encoder LR={learning_rate * 0.1:.1e}, fusion heads LR={learning_rate:.1e}")
-    else:
-        optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    if not skip_training:
+        if encoder_warmed:
+            encoder_params = list(model.encoder.parameters())
+            other_params = [p for n, p in model.named_parameters() if not n.startswith('encoder.')]
+            optimizer = AdamW([
+                {'params': encoder_params, 'lr': learning_rate * 0.1},
+                {'params': other_params, 'lr': learning_rate},
+            ], weight_decay=weight_decay)
+            print(f"Discriminative LR: encoder LR={learning_rate * 0.1:.1e}, fusion heads LR={learning_rate:.1e}")
+        else:
+            optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
-    pos_weight_tensor = torch.tensor([pos_weight], device=device) if pos_weight > 1.0 else None
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
-    print(f"Loss Function: BCEWithLogitsLoss (pos_weight={pos_weight:.1f}, reflecting -{pos_weight:.0f} FN / -1 FP asymmetric penalty)")
+        scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
+        pos_weight_tensor = torch.tensor([pos_weight], device=device) if pos_weight > 1.0 else None
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+        print(f"Loss Function: BCEWithLogitsLoss (pos_weight={pos_weight:.1f}, reflecting -{pos_weight:.0f} FN / -1 FP asymmetric penalty)")
+
+        print(f"\n{'=' * 80}")
+        print(f"STARTING EXTENDED TRAINING: {architecture_version} ({epochs} epochs on {device})")
+        print(f"{'=' * 80}")
 
     history_records: list[dict[str, Any]] = []
     best_val_auroc = -1.0
     best_val_epoch = 0
     epochs_without_val_improvement = 0
-    best_weights_path = out_p / f'{architecture_version}_best.pt'
-    history_file = out_p / f'{architecture_version}_training_history.csv'
-
-    resume_eval = bool(kwargs.get('resume_if_checkpoint_exists', False))
-    skip_training = False
-    history_df: pd.DataFrame | None = None
-    if resume_eval and best_weights_path.is_file() and history_file.is_file():
-        try:
-            cached_history = pd.read_csv(history_file)
-            if len(cached_history) >= epochs:
-                print(f"\n[RESUME] Found existing {len(cached_history)}-epoch checkpoint at: {best_weights_path}")
-                print("Skipping training loop and proceeding directly to post-hoc evaluation...")
-                history_df = cached_history
-                skip_training = True
-        except Exception as e:
-            print(f"Notice: unable to load existing history for resume: {e}")
-            skip_training = False
 
     epoch_range = [] if skip_training else range(1, epochs + 1)
-    if not skip_training:
-        print(f"\n{'=' * 80}")
-        print(f"STARTING EXTENDED TRAINING: {architecture_version} ({epochs} epochs on {device})")
-        print(f"{'=' * 80}")
 
     for epoch in epoch_range:
         ep_start = time.perf_counter()

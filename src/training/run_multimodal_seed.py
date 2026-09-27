@@ -190,14 +190,8 @@ def main() -> None:
     history_path = seed_output / 'auditddi_multimodal_v1_training_history.csv'
     best_weights_path = seed_output / 'auditddi_multimodal_v1_best.pt'
     has_completed_training = False
-    if best_weights_path.is_file() and history_path.is_file():
-        try:
-            with history_path.open('r', encoding='utf-8') as stream:
-                completed_epochs = max(sum(1 for _ in stream) - 1, 0)
-            if completed_epochs >= args.epochs:
-                has_completed_training = True
-        except Exception:
-            has_completed_training = False
+    if best_weights_path.is_file():
+        has_completed_training = True
 
     is_empty_or_scratch = False
     if seed_output.is_dir():
@@ -211,8 +205,9 @@ def main() -> None:
         if args.overwrite:
             print(f"--overwrite specified: clearing existing output folder {seed_output}...")
             shutil.rmtree(seed_output)
+            has_completed_training = False
         elif has_completed_training:
-            print(f"Found completed {args.epochs}-epoch training checkpoint for Seed {args.seed} at {seed_output}.")
+            print(f"Found completed training checkpoint for Seed {args.seed} at {seed_output}.")
             print("Completing post-hoc evaluation and generating final metrics reports...")
         else:
             raise FileExistsError(
