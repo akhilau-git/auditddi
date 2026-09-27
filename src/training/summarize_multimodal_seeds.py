@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument('--seeds', type=int, nargs='+', required=True)
     parser.add_argument('--skip-missing', action='store_true',
                         help='Skip seeds that are incomplete or missing, summarizing only completed seeds.')
+    parser.add_argument('--allow-hash-mismatch', action='store_true',
+                        help='Warn instead of raising error if input manifest hashes differ across seeds.')
     args = parser.parse_args()
 
     manifests: list[dict] = []
@@ -83,7 +85,11 @@ def main() -> None:
     for manifest in manifests[1:]:
         for key in ('split_seed', 'master_nodes_sha256', 'split_sha256', 'split_audit_sha256'):
             if manifest.get(key) != reference.get(key):
-                raise ValueError(f'Seed runs do not share identical {key}; refusing to aggregate.')
+                msg = f'Seed runs do not share identical {key} (Seed {manifest.get("model_seed")}: {manifest.get(key)} vs Ref Seed {reference.get("model_seed")}: {reference.get(key)}).'
+                if args.allow_hash_mismatch:
+                    print(f"⚠️ Warning: {msg} Continuing because --allow-hash-mismatch was specified.")
+                else:
+                    raise ValueError(f'{msg} Refusing to aggregate without --allow-hash-mismatch.')
 
     table = pd.DataFrame(metric_rows).sort_values('seed')
     args.study_dir.mkdir(parents=True, exist_ok=True)
