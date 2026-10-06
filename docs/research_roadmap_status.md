@@ -1,31 +1,25 @@
 # AuditDDI research roadmap status
 
-This status separates implemented source code from evidence that still requires
-a Colab run or an independently sourced dataset. A feature is not a result
-until its audited artifacts have been generated and reviewed.
+This status distinguishes source implementation from Colab evidence. Datasets are expected in Google Drive and training is run in Colab. The local archive contains selected outputs, not the raw Drive snapshot.
 
-| Original phase | Current status | What is implemented | What remains before a claim |
-| --- | --- | --- | --- |
-| 1. Correctness | Source complete; historical candidates require rerun | Version-aware checkpoint loading, candidate graph-schema selection, corrected auxiliary toxicity logits loss, disjoint early-stopping/post-hoc validation roles, corrected external evaluator, Colab dependency bounds, early stopping, tests, and split-aware unreported-negative sampling that forbids every known reported pair. | Rerun every multi-task candidate with the current `split_aware_standard_v1` protocol; run the selected candidate in Colab; Docker execution remains separately unverified. |
-| 2. Fair baselines | Partial | Symmetric ECFP/Morgan + SGD logistic baseline, a fixed-split experiment launcher that separates model seeds from split seed, and repeated-seed comparison support. | XGBoost, GCN/GIN, directed MPNN, and actual matched baseline runs. |
-| 3A. Motif view | Source complete | Auditable 17-SMARTS motif features and motif-edge-aware ablations. | Repeated matched-seed S1/S2 evidence. |
-| 3B. Cross-drug layer | Source complete | Pair-isolated symmetric atom-level cross attention and atom/motif association audit. | Repeated matched-seed S1/S2 and efficiency evidence. |
-| 3C. Contrastive pretraining | Source complete; execution pending | Schema-validated ChEMBL structure parser, deterministic corpus selection, strict exclusion of every non-training AuditDDI structure, edge-aware masked-feature NT-Xent pretraining, encoder-only checkpoint provenance, and a separate fine-tuning candidate. | Run the pretraining candidate in Colab, then compare its S1/S2 results against the identical-split edge-aware model across matched seeds. |
-| 4. Ablations | Source partial | Legacy, edge-aware, motif, and cross-attention DDI-only/multitask variants in a controlled suite. | Contrastive/full-model ablations and executed repeated-seed studies. |
-| 5. Explainability | Source complete for local audit | Bounded atom/bond/motif occlusion, fidelity/sufficiency, canonical-SMILES stability, pair symmetry, attention/motif associations, SVG figures, conformal/OOD fields, and cross-seed stability analyzer. | Run the cross-seed audit and obtain a real curated mechanism reference for chemical-plausibility evaluation. |
-| 6. Ensemble and abstention | Source complete; unrun | Fixed-split 3–5 member ensemble, score mean/std, fresh calibration/conformal analysis, structural-domain flag, explicit abstention. | Colab ensemble run and an honest S1/S2 analysis; it is not deployable by default. |
-| 7. Strong evaluation | Source complete; Murcko scaffold executed ($p = 5.50 \times 10^{-7}$) | Standard Transductive/S1/S2 and separate Murcko scaffold-disjoint protocol; stratified test bootstrap CIs; paired bootstrap + Wilcoxon comparison; calibration and abstention diagnostics; confidence-ranked error files; structural-novelty slices; speed/memory recording; provenance-enforced external evaluator. | Murcko scaffold study executed in Colab (Multimodal AUROC 0.5537 vs Baseline 0.5393, Wilcoxon $p = 5.5011 \times 10^{-7}$); execute remaining five-seed and genuinely independent external dataset evaluations. |
-| 8. Patient context | Intentionally disabled | API states that accepted patient fields are not used. | Real linked patient–drug–outcome data and a separate approved study. |
-| 9. External biological knowledge | Data-audit source complete; feature candidate gated | PharmGKB Chemical↔Gene/pathway parser, direct PharmGKB chemical-catalogue to canonical-TWOSIDES-structure audit, gene-profile artifact, and explicit prohibition on adding PharmGKB records as DDI labels. | Run and review direct-structure coverage. A direct PharmGKB name+SMILES chemical catalogue is required; a molecule--target activity export is still required before claiming ChEMBL target features; enable a biological candidate only after the audit is accepted. |
+| Workstream | Current evidence | Remaining work |
+|---|---|---|
+| Correctness and reproducibility | Current training and evaluation source includes split-aware unreported-negative sampling, separate model-selection and post-hoc validation roles, manifests, split hashes, prediction exports, and tests. | Re-run the release verification suite on the chosen revision and preserve the output. Do not mix legacy artifacts with current protocol. |
+| S1/S2 screening | Archived GPU screening run `backend/checkpoints/auditddi_final_screening_v1/edge_aware_multitask/seed_11/artifacts/run_20260921T231616Z/`: one model seed. AUROC 0.9161 transductive (n=18,120; test-bootstrap 95% CI 0.9124–0.9201), 0.6698 S2 (n=15,086; 0.6615–0.6778), and 0.5003 S1 (n=620; 0.4571–0.5480). | Complete matched seeds on identical valid split hashes. S1 remains near chance; do not claim successful S1 generalization. |
+| Calibration and abstention | Seed-11 run reports ECE 0.0513 transductive, 0.1581 S2, 0.2631 S1. Nominal-90% conformal observed coverage: 91.6% transductive, 72.3% S2, 62.6% S1. | Cold-start coverage misses target. Study score calibration, conformal nonconformity, shift-aware alternatives, retained error, and coverage on repeated runs. Do not describe nominal validity as observed guarantee under shift. |
+| Paper baselines and ablations | `backend/checkpoints/paper_experiments/paper_benchmark` has partial outputs. Its current plan requests one seed; `study_summary.json` contains null comparison metrics. | Run the paper preset with matched five seeds 11, 23, 37, 53, 71 and identical verified data/splits. Complete chemical baseline and matched ablations before manuscript claims. |
+| Invalid historical study | `backend/checkpoints/multimodal_seed_study` lists five seeds, but its saved summary has identical S1 dev/test hashes and four-row S1 test partitions. | Exclude from confirmatory reporting. Regenerate valid splits and rerun if useful. |
+| Scaffold OOD | Historical report: AUROC 0.5537 vs 0.5393; p=5.5011e-7. Raw paired artifacts were not located in the inspected local archive. | Recover manifests/predictions or rerun, and report absolute performance, effect size, and uncertainty. Statistical significance alone does not establish utility. |
+| Independent validation | Generic external evaluation tooling and provenance checks are implemented. No independent DrugBank/DDInter result was found in the local artifacts inspected. | Obtain/prepare a legally accessible dataset in Drive; record source, labels, dates, mapping attrition, pair overlap, and any shared compounds. Keep it out of tuning. |
+| Temporal and leave-one-drug-out studies | No executed result found in the local artifacts inspected. | Define time-stamped label cohort and leave-one-drug-out protocol, then run in Colab if the source data support valid temporal metadata and sufficient labels. |
+| Modality coverage and causal plausibility | Feature pipelines and audit hooks exist. | Produce source-wise coverage/missingness and intersection counts from the exact benchmark snapshot; conduct curated mechanism-recovery evaluation before mechanistic claims. |
+| Deployment | Legacy research checkpoints are present. New candidate promotion is explicitly prohibited by the study plan. | Review a completed, repeated-seed candidate and provenance before manual checkpoint promotion. Keep the API research-only. |
 
-## Non-negotiable limits
+## Dataset interpretation limits
 
 - A sampled unreported TWOSIDES pair is not a known-safe pair.
-- S1 results remain the key generalization test; the historical S1 result was near random.
-- FAERS toxicity is observational and the 58 conflicting mapped structures remain excluded.
-- Older multi-task artifacts used before the recorded toxicity-logits loss contract, validation-role separation, and split-aware unreported-negative protocol are historical only; do not compare or ensemble them with new runs.
-- Explanations, attention, calibration, conformal sets, OOD flags, and abstention are research aids—not clinical evidence.
-- No candidate or ensemble may overwrite `backend/checkpoints/auditddi_model.pt` without a documented review and explicit approval.
-- The supplied ChEMBL `chemreps` and UniProt mapping files are a structure corpus and target metadata, respectively; they do not contain molecule--target activity labels.
-- PharmGKB chemical--gene/pathway evidence must never be appended to TWOSIDES positive DDI labels or described as external DDI validation.
-- ChEMBL contrastive pretraining is an encoder warm start only. Its corpus excludes direct structures outside the DDI training split and its checkpoint cannot replace the deployed model automatically.
+- FAERS signals are observational and full-history leakage risk remains; 58 conflicting mapped structures are excluded in the archived run.
+- A source pipeline existing in the repository does not mean that source was used by a candidate. Report actual input channels and mapping coverage from that run manifest.
+- Morgan ECFP is a standard fingerprint, not a novel graph fingerprint.
+- Explanations, attention, calibration, conformal sets, OOD flags, and abstention are research diagnostics, not clinical evidence.
+- No candidate may overwrite the deployed checkpoint without a documented review.

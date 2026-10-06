@@ -1,3 +1,7 @@
+# Status correction (2026-10-05)
+
+This earlier plan contains superseded claims. The available edge-aware screening run reports S1 AUROC 0.5003, S2 AUROC 0.6698, and nominal-90% conformal coverage of 62.6% on S1 and 72.3% on S2. Cold-start capability is not established. See [research roadmap status](research_roadmap_status.md) and [model card](../MODEL_CARD.md) for current evidence. Do not rely on historical 0.9516 AUROC, test-count, or completion assertions below as current verification.
+
 # AuditDDI Next-Phase Research & Engineering Roadmap
 
 This document outlines the end-to-end plan for executing **Option 1 (UniProt / ESM-2 Protein Modeling)**, **Option 2 (Murcko Scaffold-Disjoint Study)**, **Option 3 (Model Card & Documentation Overhaul)**, and **Option 4 (Production API & Interactive UI Serving)**. Each item contains **What to do**, **Why to do it**, **How to do it**, and verifiable tick-boxes (`- [ ]` / `- [x]`).

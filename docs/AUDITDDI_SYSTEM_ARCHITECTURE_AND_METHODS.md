@@ -6,7 +6,7 @@
 
 This document serves as the exhaustive technical reference detailing:
 1. The **Phase 1 Baseline** (`graph_fp_fusion_v1`), its experimental validation, and the discovery of the **Asymmetric Memorization Vulnerability (S1 Cold-Start Collapse)**.
-2. The **Phase 2 Multimodal Expansion** (`auditddi_multimodal_v1`), which **combines with—rather than replaces—the Phase 1 backbone** to resolve the S1 collapse using evolutionary protein sequences (ESM-2), pharmacogenomics (PharmGKB), and target profiles (BindingDB).
+2. The **Phase 2 Multimodal Expansion** (`auditddi_multimodal_v1`), which adds optional protein-sequence, pharmacogenomic, and target-profile channels. The archived single-seed screening run did not resolve S1: AUROC was 0.5003.
 3. The exact mathematical and neural pipeline from molecular SMILES to calibrated risk scores and explainability heatmaps.
 4. Rigorous evaluation protocols, including standard Transductive/S1/S2 splits and out-of-distribution **Bemis-Murcko Scaffold-Disjoint** benchmarking.
 
@@ -46,7 +46,7 @@ This document serves as the exhaustive technical reference detailing:
 
 ### B. Why Phase 2 Combines With (Not Replaces) Phase 1
 Rather than abandoning the GATv2 + ECFP chemical backbone, Phase 2 retains it as the primary structural feature extractor and plugs in biological modalities on top:
-1. **Biological Grounding Solves S1 Collapse**: When a drug's 2D chemical structure is completely unseen, its *biological target protein* is often known. Integrating UniProt target sequences (via ESM-2) provides an inductive bias that allows the network to recognize shared mechanisms (e.g., both drugs binding CYP3A4) even when chemical fingerprints look alien.
+1. **Biological feature hypothesis**: Protein sequence and target features are available as candidate inputs, but the archived screening run has near-chance S1 AUROC. Their benefit for cold-start prediction is not established.
 2. **Hybrid Target-Sequence Fusion**: BindingDB provides quantitative affinity vectors, while UniProt provides structural amino-acid sequences. Phase 2 introduces a gated fusion layer (`target_sequence_fusion`) that preserves both sources without discarding observed profiles.
 3. **Murcko Scaffold-Disjoint Splitting**: To test true chemical generalization beyond random splits, molecules are partitioned by their core Bemis-Murcko rings, isolating entire chemical families between train and test.
 
@@ -186,6 +186,6 @@ Evaluates true out-of-distribution generalization across disjoint Bemis-Murcko m
 | **Symmetric Combination** | $[E_{sum} \parallel E_{diff}]$ | $[E_{sum} \parallel E_{diff}]$ | **Retained as Core Backbone** |
 | **Biological Modalities** | None (pure chemistry) | PharmGKB, BindingDB, UniProt, PDB, GEO | **Integrated via Cross-Attention** |
 | **Target Representation** | None | UniProt Primary Sequence + ESM-2 / 1D-CNN | **Integrated via Gated Fusion** |
-| **S1 Generalization** | Collapsed (0.527 AUROC) | Biologically Grounded (Resolved) | **Active Research Target** |
+| **S1 generalization** | Archived seed-11 AUROC 0.5003 (95% test-bootstrap CI 0.4571–0.5480) | Near chance; cold-start performance remains an open research problem. |
 | **Scaffold Generalization**| Random Split Only | Murcko Scaffold-Disjoint ($p = 5.50 \times 10^{-7}$) | **Verified in Google Colab** |
 | **Default Serving Model** | `backend/checkpoints/auditddi_model.pt` | Gated by `AUDITDDI_CHECKPOINT_PATH` | **Preserved for Offline Dev** |

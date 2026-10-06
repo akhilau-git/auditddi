@@ -19,7 +19,7 @@
 ## 1. The Clinical & Epidemiological Problem
 
 ### The Crisis of Polypharmacy
-Modern healthcare faces an unprecedented epidemiological challenge: **polypharmacy**—the concurrent use of five or more medications by a single patient. 
+Modern healthcare faces an unprecedented epidemiological challenge: **polypharmacy**—the concurrent use of five or more medications by a single patient.
 * Over **40% of adults aged 65 and older** take 5+ prescription drugs daily.
 * In complex conditions such as oncology, cardiology, and intensive care units (ICUs), patients regularly receive between **8 and 15 simultaneous medications**.
 
@@ -82,21 +82,21 @@ Historically, medical institutions and pharmaceutical companies have relied on t
 
 AuditDDI was designed from the ground up to eliminate every single failure mode identified above. Its uniqueness is grounded in four foundational pillars:
 
-### Pillar 1: Full 8-Dataset Multimodal Fusion
-Rather than looking only at 2D chemical drawings, AuditDDI fuses **8 distinct biological, physical, and pharmacological data streams**:
-1. **2D Molecular Graphs**: Atom- and bond-level message passing via Edge-Aware GATv2.
-2. **1,024-bit Morgan Fingerprints (ECFP6)**: Global functional group hashing.
-3. **FDA FAERS Toxicity Profiles**: Multitask auxiliary regularization on 281 clean toxicity endpoints.
+### Optional Data Sources and Model Inputs
+AuditDDI has optional feature pipelines and multiple candidate configurations. These are data sources, not a fixed count of fused streams; consult each run manifest for the channels actually used. Training data remain in Google Drive/Colab; selected benchmark outputs are archived locally.
+1. **2D Molecular Graphs**: RDKit graph representation used by graph-model candidates.
+2. **Morgan Fingerprints**: Standard 1,024-bit Morgan features; not a novel graph fingerprint.
+3. **FDA FAERS Toxicity Profiles**: Auxiliary labels/evidence under a leakage-audited protocol; not automatically a primary DDI feature.
 4. **PharmGKB Pharmacogenomics**: 50-dimensional multi-hot representations of drug-metabolizing enzymes and pathways (e.g., CYP3A4, CYP2D6, CYP2C9).
 5. **BindingDB Affinity Profiles**: Quantitative receptor/transporter multi-hot binding profiles.
-6. **UniProt Primary Sequences via ESM-2**: 64-dimensional protein language representations of target receptor amino acids.
+6. **UniProt Sequences**: Optional target-sequence features; mapped coverage and the actual encoder vary by candidate.
 7. **PDB 3D Binding Pockets**: 50-dimensional spatial pocket descriptors.
 8. **GEO Gene Expression Signatures**: 2-dimensional systemic up/down-regulation signatures.
 
 ### Pillar 2: The Combined Phase 1 + Phase 2 Architecture
 AuditDDI **combines** rather than replaces its stages:
 * **The Phase 1 Backbone** provides the fast, robust 2D molecular geometry and symmetric pair combination ($E_A + E_B$ and $|E_A - E_B|$).
-* **The Phase 2 Expansion** layers biological attention and target-sequence fusion *on top of that backbone*. When an unseen molecule is encountered, the network falls back on evolutionary protein sequence context, preventing the S1 cold-start collapse.
+* **The Phase 2 Expansion** layers biological attention and target-sequence fusion *on top of that backbone*. Protein sequence is an optional candidate feature. The archived screening run has near-chance S1 performance, so the code has not demonstrated that this resolves cold-start generalization.
 
 ### Pillar 3: Mathematical Order Invariance
 In clinical reality, prescribing Drug A with Drug B is identical to prescribing Drug B with Drug A. AuditDDI enforces strict permutation symmetry mathematically:
@@ -115,16 +115,16 @@ Yes, but with **honest, audited scientific boundaries**. AuditDDI refuses to pre
 
 ### Empirical Performance Summary Across Experimental Regimes
 
-| Evaluation Protocol | Baseline 2D GNN | AuditDDI Multimodal | Statistical Significance / Audit Finding |
+| Evaluation protocol | Test-set metric | Evidence note |
 |---|---|---|---|
-| **Transductive Test** (Known Drugs, New Pairs) | AUROC: 0.897 | **AUROC: 0.952** | State-of-the-art; convergence in <40 epochs via ECFP shortcut. |
-| **S1 Inductive** (Both Drugs Unseen) | Historical values only | Historical values only | Requires repeated audited reruns; do not claim resolution. |
-| **S2 Inductive** (One Unseen Drug) | Historical values only | Historical values only | Requires repeated audited reruns; do not claim zero-shot generalization. |
-| **Bemis-Murcko Scaffold-Disjoint** | AUROC: 0.539 | **AUROC: 0.554** | **$p = 5.5011 \times 10^{-7}$** across 1,000-iteration paired bootstrap. |
+| **Transductive (screening, seed 11)** | n=18,120; AUROC 0.9161 (95% test-bootstrap CI 0.9124–0.9201) | Single seed; no repeated-seed uncertainty. |
+| **S1 (both unseen, seed 11)** | n=620; AUROC 0.5003 (0.4571–0.5480) | Near chance; does not establish cold-start utility. |
+| **S2 (one unseen, seed 11)** | n=15,086; AUROC 0.6698 (0.6615–0.6778) | Single-seed screening result; further matched seeds and external validation are required. |
+| **Bemis-Murcko scaffold-disjoint** | Historical AUROC 0.5393 | Historical AUROC 0.5537; small difference, artifacts not found in local archive. |
 
 ### How Truthfulness is Enforced
-1. **Scaffold-Disjoint Generalization**: We partition molecules by their Bemis-Murcko rings so that entire core structures are withheld from training. Any observed performance difference is benchmark evidence only; it does not prove a chemical mechanism or clinical benefit.
-2. **Platt-Calibrated Probabilities**: Raw logits are mapped through validation logistic calibration. A calibrated score of `0.85` corresponds to an empirical 85% probability of reported adverse interaction.
+1. **Scaffold-disjoint result**: Historical AUROC 0.5537 versus 0.5393 was reported. The absolute difference is small and its raw paired predictions and run artifacts are not in this checkout; statistical significance alone does not show practical utility.
+2. **Calibration**: The seed-11 run reports ECE 0.0513 transductive, 0.1581 on S2, and 0.2631 on S1. Calibration degrades under cold-start shift; scores are not clinical probabilities.
 3. **Audit Nomenclature**: The output is explicitly labeled as **"Probability of Reported Adverse Interaction in Pharmacovigilance Surveillance"**, actively preventing clinicians from misinterpreting a low score as proof of absolute biological safety.
 
 ---
@@ -133,7 +133,7 @@ Yes, but with **honest, audited scientific boundaries**. AuditDDI refuses to pre
 
 ### 1. Hospital Decision Support & Alert Fatigue Reduction
 * Current EHR systems (Epic, Cerner) produce alert fatigue rates above **90%**, causing doctors to blindly click "Dismiss" on critical warnings.
-* AuditDDI's calibrated probability and conformal thresholding filter out low-confidence noise, surfacing only high-certainty, mechanistically attributable alerts.
+* The available screening run misses nominal conformal coverage on cold-start partitions (72.3% S2 and 62.6% S1 at nominal 90%). The current evidence does not establish alert reduction or clinical benefit.
 
 ### 2. Pharmaceutical R&D & De-Risking (Cost Reduction)
 * Bringing a new drug to market costs an average of **$1.3 to $2.6 billion**, with Phase II/III safety failures accounting for a massive fraction of losses.
@@ -302,12 +302,12 @@ AuditDDI incorporates post-hoc layers that convert neural outputs into clinical-
 
 ## 10. Conclusion & Future Roadmap
 
-AuditDDI transforms Drug-Drug Interaction modeling from an academic exercise in vanity curve-fitting into a **principled, auditable scientific instrument**. 
+AuditDDI is a research prototype with an archived screening run; cold-start utility and clinical benefit have not been established.
 
 ### Summary of Accomplishments:
-* **Solves the S1 Cold-Start Collapse** by fusing primary amino-acid sequences (ESM-2) with chemical graphs.
-* **Proves Out-of-Distribution Rigor** with statistically significant Bemis-Murcko scaffold generalization ($p = 5.5011 \times 10^{-7}$).
-* **Enforces Clinical Trust** via Platt probability calibration, conformal abstention, order-invariant pair symmetry, and atom-level substructure attribution.
-* **Maintains Complete Software Quality** with 226 passing unit tests, automated CI/CD workflows, Docker containerization, and sub-50ms inference latency.
+* **S1 remains unresolved**: archived screening AUROC was 0.5003.
+* **Scaffold evidence is preliminary**: historical AUROC difference is small and underlying artifacts are not present in this archive.
+* **Trust tooling is under evaluation**: conformal coverage is below nominal under cold-start shift, and clinical trust is not established.
+* **Software status**: API and frontend code exist, but this review did not rerun tests or verify a production deployment.
 
-AuditDDI provides researchers, medicinal chemists, and clinicians with a reliable, transparent, and biologically grounded framework for polypharmacy risk management.
+AuditDDI currently provides researchers with an experimental framework. It is not a validated clinical or medicinal-chemistry decision tool.

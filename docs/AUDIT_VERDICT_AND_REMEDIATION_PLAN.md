@@ -1,3 +1,7 @@
+# Status correction (2026-10-05)
+
+This historical remediation report records earlier verification claims. Tests were not rerun during the present audit; its historical test counts do not describe current verification. The current archived seed-11 screening run has S1 AUROC 0.5003 and S2 AUROC 0.6698, with below-nominal conformal coverage under cold-start shift. See [research roadmap status](research_roadmap_status.md) and [model card](../MODEL_CARD.md) for the evidence and remaining work.
+
 # AuditDDI Independent Review Verdict & Remediation Plan
 
 This document records the official assessment verdict, issue categorization, remediation actions taken, and the verification status across all identified findings.

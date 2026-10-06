@@ -1,4 +1,4 @@
-# AuditDDI: An Auditable Graph-Fingerprint Framework for Cold-Start Drug-Drug Interaction Prediction
+# AuditDDI: An Auditable Framework for Drug-Drug Interaction Prediction under Cold-Start Evaluation
 
 AuditDDI is an auditable, structure-based deep learning framework for drug-drug interaction (DDI)
 prediction specifically engineered for cold-start generalization (novel, unseen drugs).
@@ -28,22 +28,11 @@ research-only DDI reference, but it must not be used to make an
 auxiliary-toxicity performance claim. Every multi-task candidate must be
 retrained with the current code before comparison.
 
-## Historical evaluation figures
+## Archived Colab screening result
 
-The following previously reported figures are retained for traceability, but
-cannot yet be independently reproduced from this repository because raw data,
-split manifests, prediction files, and completed Colab outputs are not stored
-here.
+A local archive contains one completed Colab GPU screening run for `edge_aware_multitask` (seed 11, split seed 42). It reports test AUROC 0.9161 transductive (n=18,120; stratified bootstrap 95% CI 0.9124–0.9201), 0.6698 S2 (n=15,086; 0.6615–0.6778), and 0.5003 S1 (n=620; 0.4571–0.5480). This is one seed; intervals reflect test-row resampling, not seed-to-seed uncertainty. The S1 result is near chance.
 
-| Split | AUROC | F1 |
-|---|---:|---:|
-| Transductive | 0.9735 | 0.9170 |
-| S1 (both unseen drugs) | 0.5021 | 0.3530 |
-| S2 (one unseen drug) | 0.7474 | 0.6387 |
-
-Do not treat these figures as current, reproducible evidence until the next
-audited Colab run produces versioned data, split manifests, metrics, and
-prediction artifacts.
+Observed conformal coverage for a nominal 90% rule was 91.6% transductive, 72.3% S2, and 62.6% S1. The current rule therefore misses its nominal coverage under cold-start shift. This is not evidence of cold-start reliability. See `research_paper/results.md` for calibration metrics and caveats. Labels are reported TWOSIDES interactions versus sampled unreported pairs, not harmful versus safe outcomes.
 
 ## Local setup
 

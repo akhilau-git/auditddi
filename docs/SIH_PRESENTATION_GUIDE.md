@@ -1,8 +1,8 @@
 # AuditDDI — Smart India Hackathon (SIH) Innovation Deck Guide
 
-> **Generated PowerPoint File**: [`AuditDDI_SIH_Presentation.pptx`](file:///d:/Drug-Drug%20Interaction/AuditDDI/AuditDDI_SIH_Presentation.pptx)  
-> **Category**: Student Innovation / Idea Presentation  
-> **Theme**: MedTech / BioTech / HealthTech / Smart Health  
+> **Generated PowerPoint File**: [`AuditDDI_SIH_Presentation.pptx`](file:///d:/Drug-Drug%20Interaction/AuditDDI/AuditDDI_SIH_Presentation.pptx)
+> **Category**: Student Innovation / Idea Presentation
+> **Theme**: MedTech / BioTech / HealthTech / Smart Health
 > **Format**: Official 8-Slide SIH Executive Template (16:9 Widescreen, Medical Dark-Tech UI)
 
 ---
@@ -75,58 +75,58 @@
 ---
 
 ### Slide 5: Novelty & Competitive Benchmark Matrix
-* **Slide Title**: Competitive Benchmark: Why AuditDDI Outperforms
+* **Slide Title**: AuditDDI Evaluation Status
 * **Comparison Dimensions**:
   | Capability | Traditional Lookup (DrugBank, Medscape) | Standard Academic AI (Decagon, DeepDDI) | **AuditDDI (Our Innovation)** |
   |---|---|---|---|
-  | **Cold-Start (Unseen Drugs)** | ❌ FAIL (Zero data) | ❌ POOR (~50% AUROC) | **✅ EXCELLENT (Generalizes via ESM-2 & GNN)** |
-  | **Scaffold Generalization** | ❌ N/A (Dictionary lookup) | ❌ FAIL (Scaffold memorization) | **✅ ROBUST (Murcko Scaffold-Disjoint Audited)** |
-  | **Biological Grounding** | ⚠️ Text notes only | ⚠️ Single network (PPI only) | **✅ MULTIMODAL (PharmGKB, FAERS, PDB, UniProt)** |
-  | **Explainability** | ⚠️ Static URL links | ❌ Black-Box raw output | **✅ AUDITABLE (RAG-DDI Analog Retrieval)** |
-  | **Clinical Safety & Uncertainty** | ⚠️ Binary warning | ❌ Overconfident logits | **✅ CONFORMAL (Calibrated Abstention on OOD)** |
-  | **Inference Speed & Serving** | ✅ Fast (<10ms) | ❌ Slow graph queries (>500ms) | **✅ HIGH SPEED (<45ms/pair, Dockerized FastAPI)** |
+  | **Cold-start (unseen drugs)** | Lookup coverage only | Protocol-dependent | One archived run: S1 AUROC 0.5003; S2 AUROC 0.6698. S1 is near chance. |
+  | **Scaffold evaluation** | Not applicable | Protocol-dependent | Historical AuditDDI AUROC 0.5537; preliminary, with raw benchmark artifacts unavailable in this checkout |
+  | **Biological features** | Not comparable | Varies by model | Optional pipelines; actual inputs and coverage are run-specific. |
+  | **Attribution** | Static references | Model-dependent | Atom/motif sensitivity tools; mechanism validation remains pending. |
+  | **Uncertainty** | Lookup warnings | Model-dependent | Nominal-90% conformal coverage observed: 62.6% S1, 72.3% S2. Not clinically validated. |
+  | **Serving** | N/A | Varies | Local research API/dashboard exist; no clinical deployment claim. |
 * **🗣️ Speaker Script (45 Seconds)**:
-  > *"When evaluated against existing systems, AuditDDI establishes a clear technological moat. Traditional tools cannot handle novel drugs. Existing research GNNs suffer when chemical scaffolds change. AuditDDI is the first framework tested on Murcko scaffold-disjoint splits with multimodal protein language grounding, auditable analog evidence, and conformal abstention."*
+  > *"Our current scaffold-disjoint result is preliminary: historical AUROC was 0.5537 versus 0.5393 for the baseline, and the absolute lift is small. S1 cold-start performance was near chance in the historical report. We are completing repeated matched-seed and independent external evaluation before making generalization claims."*
 
 ---
 
 ### Slide 6: Feasibility, Validation & Technical Readiness
-* **Slide Title**: Experimental Validation & Production Readiness
+* **Slide Title**: Experimental Validation and Current Limits
 * **Key Metrics Highlighted**:
-  - **0.9516 AUROC**: Audited validation accuracy on clean, leak-free multimodal graph benchmarks.
-  - **<45 ms / Pair**: Blazing fast inference suitable for live real-time clinical prescription checks.
-  - **218 Automated Tests**: Comprehensive automated regression suite covering chemistry parsing, model symmetry, API health, and leak guards.
-  - **Production Architecture**: Asynchronous FastAPI microservice + Docker container + Interactive Clinician Dashboard with 2D chemical structure rendering.
-  - **Safety Guardrails**: Out-of-Distribution (OOD) rejection for malformed molecules + Conformal Abstention ("Flag for Clinical Pharmacist Review").
+  - **Screening AUROC**: 0.9161 transductive, 0.6698 S2, and 0.5003 S1 in one archived seed-11 run; S1 is near chance.
+  - **Conformal coverage**: 91.6% transductive, 72.3% S2, 62.6% S1 against nominal 90%; cold-start target not met.
+  - **Repeated seeds**: Incomplete. Existing paper study has null comparison metrics; five-seed artifact has invalid S1 splits.
+  - **Software**: FastAPI service and web dashboard are research prototypes; clinical validation and production readiness are not established.
+  - **Research guardrails**: Input validation, structural novelty flags, and conformal abstention are implemented; cold-start reliability is unproven.
 * **🗣️ Speaker Script (45 Seconds)**:
-  > *"AuditDDI is not just a theoretical model — it is an engineered, production-ready system. We achieve an audited 0.9516 validation AUROC. Our inference speed is under 45 milliseconds per pair on standard CPU, allowing doctors to screen an entire 10-drug prescription in under half a second.*
+  > *"AuditDDI is a research prototype. One archived run achieved AUROC 0.916 transductive, 0.670 on S2, and 0.500 on S1. The S1 result is near chance, and observed conformal coverage falls below its 90% target under cold-start shift. Repeated-seed and external evaluation remain necessary.*
   >
-  > *Our codebase is backed by 218 passing automated tests, containerized via Docker with read-only root security, and equipped with a responsive clinical dashboard."*
+  > *The repository includes API and dashboard code, but we are not claiming production readiness or clinical benefit."*
 
 ---
 
 ### Slide 7: Healthcare Impact & National Alignment (ABDM)
 * **Slide Title**: Healthcare Impact & National Digital Health Alignment
 * **4 Beneficiary Quadrants**:
-  1. **Clinicians & Hospitals**: Acts as a real-time copilot during prescription entry, reducing drug-related ICU admissions and lengths of hospital stay.
-  2. **Patients & Elderly Care**: Directly protects elderly polypharmacy patients from silent drug clashes (e.g. fatal arrhythmias from QT prolongation, renal toxicity).
+  1. **Clinicians & Hospitals**: Potential future research use after external and clinical validation; no patient care use is supported by current evidence.
+  2. **Patients & Elderly Care**: Could be studied for polypharmacy support after validation (e.g. fatal arrhythmias from QT prolongation, renal toxicity).
   3. **Pharmaceutical R&D**: Preclinical lead de-risking; screens combination oncology therapies and antiviral cocktails before expensive clinical trials.
-  4. **National Health Alignment (India)**: Ready for integration with **Ayushman Bharat Digital Mission (ABDM)** via FHIR/HL7 standards, supporting **e-Sanjeevani Telemedicine** and **Jan Aushadhi Kendras**.
+  4. **National Health Alignment (India)**: FHIR/HL7 integration is future work and has not been validated, supporting **e-Sanjeevani Telemedicine** and **Jan Aushadhi Kendras**.
 * **🗣️ Speaker Script (45 Seconds)**:
   > *"The impact is immediate and scalable. In India, under the Ayushman Bharat Digital Mission (ABDM), millions of electronic health records and e-prescriptions are being generated daily through e-Sanjeevani and Jan Aushadhi Kendras.*
   >
-  > *AuditDDI can be plugged directly into ABDM's FHIR APIs as a national drug safety gateway, automatically screening prescriptions before medicines are dispensed in rural and urban clinics alike."*
+  > *The repository does not include a validated ABDM integration. External evaluation, clinical governance, privacy/security review, and prospective validation would be required before any care workflow."*
 
 ---
 
 ### Slide 8: Future Scope & Implementation Roadmap
 * **Slide Title**: Future Scope & Implementation Roadmap
 * **3 Structured Phases**:
-  - **Phase 1 (Completed / Hackathon MVP)**: Multimodal graph + ESM-2 architecture, audited validation (0.9516 AUROC), Dockerized FastAPI service + Web UI, 218 passing automated tests.
+  - **Phase 1 (Completed / Hackathon MVP)**: Research API and web prototype plus an archived one-seed screening run. S1 AUROC is 0.5003 and cold-start conformal coverage is below target.
   - **Phase 2 (Months 1–6)**: FHIR/HL7 EHR integration, multi-drug regimen screening ($N > 2$ simultaneous combinations), clinical pilot in tertiary hospital cardiology/oncology wards.
   - **Phase 3 (Months 6–18)**: Deployment across national telemedicine portals, preclinical screening SaaS for Indian pharmaceutical manufacturers, pharmacovigilance partnership with the Indian Pharmacopoeia Commission (IPC).
 * **🗣️ Speaker Script (30 Seconds)**:
-  > *"We have already completed Phase 1: the fully audited multimodal model, API, and web interface are working today. Over the next 6 months, we will develop FHIR connectors for hospital EHRs and initiate clinical pilot evaluations.*
+  > *"The code prototype and initial screening run are available. The near-chance S1 result and below-target cold-start conformal coverage mean that matched-seed and independent external studies come before considering clinical integration.*
   >
   > *Our ultimate vision is to transform drug safety from retrospective crisis management to proactive, auditable AI prediction — safeguarding millions of lives. Thank you, and we look forward to your questions."*
 
@@ -135,75 +135,73 @@
 ## 💡 Top 10 Anticipated Jury / Evaluator Questions & Winning Answers
 
 ### Q1: "How does AuditDDI predict interactions for a drug that has NO prior clinical data (Cold-Start)?"
-> **Answer**:  
-> *"Traditional databases fail because they look up drug names. AuditDDI doesn't rely on drug identities. Instead, it extracts the fundamental 2D/3D chemical topology (atoms, hybridization, chiral centers, functional groups) using an Edge-Aware GATv2 network and 1024-bit Morgan fingerprints. Furthermore, using Meta's ESM-2 protein language model, we project the amino acid sequences of human target enzymes (like CYP3A4). The model recognizes the biophysical and chemical binding motifs that cause adverse interactions, even for a molecule synthesized yesterday."*
+> **Answer**:
+> *"Traditional databases fail because they look up drug names. AuditDDI doesn't rely on drug identities. Instead, it extracts the fundamental 2D/3D chemical topology (atoms, hybridization, chiral centers, functional groups) using an Edge-Aware GATv2 network and 1024-bit Morgan fingerprints. Furthermore, using Meta's ESM-2 protein language model, we project the amino acid sequences of human target enzymes (like CYP3A4). the model can compute scores for unseen structures, but the archived S1 AUROC is near chance; useful generalization has not been demonstrated."*
 
 ---
 
-### Q2: "Many AI papers claim 98% or 99% accuracy on DDI datasets. How does your 0.9516 compare?"
-> **Answer**:  
-> *"That is a crucial point, and it highlights our core research integrity. Many published papers claim 98%+ AUROC because of **test-set data leakage** — they evaluate on random splits where the same drug pairs or identical chemical scaffolds exist in both training and testing. In our research audit, we eliminated all test leakage: early stopping, temperature calibration, and threshold optimization are fitted strictly on independent post-hoc validation holdouts, and we evaluate on Murcko scaffold-disjoint holdouts. Our 0.9516 is a true, leak-free, reproducible validation metric."*
+### Q2: "What do your current results show?"
+> **Answer**:
+> *"That is a crucial point, and it highlights our core research integrity. Results across papers are not directly comparable without matching datasets, labels, and splits. We should avoid attributing other studies' results to leakage without a direct audit. In our research audit, we eliminated all test leakage: early stopping, temperature calibration, and threshold optimization are fitted strictly on independent post-hoc validation holdouts, and we evaluate on Murcko scaffold-disjoint holdouts. Historical metrics require their split manifests and prediction artifacts for independent reproduction; the current checkout does not include them."*
 
 ---
 
 ### Q3: "What if the AI is wrong? What prevents a dangerous false negative in a hospital?"
-> **Answer**:  
-> *"We implemented two safety layers:  
-> 1. **Cost-Sensitive Thresholding**: We optimize the Youden Index with an asymmetric cost penalty ($pos\_weight = 2.0$), which penalizes false negatives twice as heavily as false positives, raising clinical sensitivity above 70%.  
-> 2. **Conformal Uncertainty Abstention**: When a drug pair falls outside the training chemical applicability domain, the model does not hallucinate a score — it outputs an abstention alert: 'High Uncertainty — Insufficient Chemical Support — Refer to Clinical Pharmacist'."*
+> **Answer**:
+> *"A wrong prediction remains possible. In the archived run, conformal coverage was only 62.6% for S1 and 72.3% for S2 at a nominal 90%. No safety guarantee or patient-care recommendation is established.
 
 ---
 
 ### Q4: "How does the system explain its predictions to an MD or clinical pharmacologist?"
-> **Answer**:  
-> *"Through our **RAG-DDI Neighbor Interaction Memory**. When a prediction is generated, the system queries its verified training memory to retrieve the top-3 nearest structural analogs and displays their documented interaction mechanism, metabolic pathway (e.g. CYP3A4 competitive inhibition), and FAERS adverse event severity. The doctor sees both the risk level and the underlying pharmacological evidence."*
+> **Answer**:
+> *"Through our **RAG-DDI Neighbor Interaction Memory**. The repository includes analog-retrieval and attribution components. Retrieved neighbors and model attributions are candidate evidence for research review, not independently verified mechanisms."*
 
 ---
 
 ### Q5: "How does this integrate with the Indian Healthcare Ecosystem (ABDM)?"
-> **Answer**:  
-> *"AuditDDI is engineered as a lightweight, containerized REST API with FHIR/HL7 data schemas. Under the Ayushman Bharat Digital Mission (ABDM), e-prescriptions generated on e-Sanjeevani or hospital EHRs can call our `/predict` endpoint via HTTPS. With an inference latency of under 45 milliseconds per pair, a 6-drug prescription is screened in under 300 milliseconds without slowing down the doctor's workflow."*
+> **Answer**:
+> *"AuditDDI is engineered as a lightweight, containerized REST API with FHIR/HL7 data schemas. Under the Ayushman Bharat Digital Mission (ABDM), e-prescriptions generated on e-Sanjeevani or hospital EHRs can call our `/predict` endpoint via HTTPS. No clinically validated EHR integration or latency target is established by the current evidence."*
 
 ---
 
 ### Q6: "Can your system handle combinations of 3 or more drugs (higher-order polypharmacy)?"
-> **Answer**:  
+> **Answer**:
 > *"Yes. While the core model evaluates pairwise interactions with commutative symmetry ($f(A, B) \equiv f(B, A)$), our API includes a multi-drug batch screening pipeline that generates an all-pairs interaction risk matrix across an entire prescription ($N \times (N-1) / 2$ pairs), highlighting the critical risk edges and primary bottleneck enzymes."*
 
 ---
 
 ### Q7: "What databases did you use to ground your biological multi-omics?"
-> **Answer**:  
-> *"We integrated 6 authoritative biomedical data sources:  
-> 1. **TWOSIDES**: 639 curated compounds and known clinical interaction pairs.  
-> 2. **UniProt**: Direct primary FASTA protein sequences for human metabolic enzymes and receptors.  
-> 3. **PharmGKB**: Pharmacogenomics multi-hot gene interaction profiles.  
-> 4. **FAERS**: FDA post-marketing adverse reaction severity metrics.  
-> 5. **BindingDB**: Validated macromolecular target binding affinities.  
+> **Answer**:
+> *"The repository contains pipelines for several sources, but each model run consumes only configured inputs; source coverage must be read from its manifest:
+> 1. **TWOSIDES**: 639 curated compounds and known clinical interaction pairs.
+> 2. **UniProt**: Direct primary FASTA protein sequences for human metabolic enzymes and receptors.
+> 3. **PharmGKB**: Pharmacogenomics multi-hot gene interaction profiles.
+> 4. **FAERS**: FDA post-marketing adverse reaction severity metrics.
+> 5. **BindingDB**: Validated macromolecular target binding affinities.
 > 6. **PDB**: 3D macromolecular protein-ligand structural complex signatures."*
 
 ---
 
 ### Q8: "How does the model guarantee that Drug A + Drug B gives the same result as Drug B + Drug A?"
-> **Answer**:  
+> **Answer**:
 > *"Many naive neural networks produce different probabilities if you swap the order of inputs! In AuditDDI, we enforce strict **Commutative Symmetry Invariance** directly in the neural architecture using commutative operations ($e_A + e_B$ and $|e_A - e_B|$). Mathematically, $f(A, B) \equiv f(B, A)$ identically, eliminating order-dependent prescription errors."*
 
 ---
 
 ### Q9: "What is your business model / commercialization plan?"
-> **Answer**:  
-> *"We follow a dual-track model:  
-> 1. **B2G & B2B HealthTech (SaaS / API Subscription)**: Licensing the clinical copilot API to private hospital chains, EHR software vendors, and government digital health portals (e-Sanjeevani / ABDM).  
+> **Answer**:
+> *"We follow a dual-track model:
+> 1. **B2G & B2B HealthTech (SaaS / API Subscription)**: Potential future research or product work, contingent on independent validation, clinical governance, security review, and regulatory requirements.
 > 2. **Preclinical Pharma Screening (Enterprise Tier)**: Pharmaceutical companies pay per-compound screening fees during preclinical lead optimization to identify interaction liabilities before spending millions on Phase I trials."*
 
 ---
 
 ### Q10: "What have you built and verified so far, and what will you build during the Grand Finale?"
-> **Answer**:  
-> *"Today, our core innovation is complete and validated: the multimodal GNN, ESM-2 sequence integration, RAG-DDI memory, 0.9516 AUROC validation, 218 passing automated tests, Docker setup, and web dashboard.  
-> In the Grand Finale, we will demonstrate:  
-> 1. Live FHIR-compliant e-prescription ingestion from simulated EHRs.  
-> 2. Real-time visual graph rendering of N-way drug interaction networks.  
+> **Answer**:
+> *"The research code and dashboard prototype are available. The archived S1 AUROC is near chance, cold-start conformal coverage is below target, and the matched five-seed/external evaluations remain incomplete.
+> In the Grand Finale, we will demonstrate:
+> 1. Live FHIR-compliant e-prescription ingestion from simulated EHRs.
+> 2. Real-time visual graph rendering of N-way drug interaction networks.
 > 3. An offline-capable mobile interface designed for rural health workers and Jan Aushadhi pharmacists."*
 
 ---
