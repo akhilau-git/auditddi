@@ -114,6 +114,12 @@ def import_directory(input_dir: str | Path, output_dir: str | Path) -> dict:
         "split_definition": "Not split; source evidence import only.",
         "external_evaluation_ready": False,
         "reason_not_evaluation_ready": "Drug identity-to-SMILES mapping, overlap audit, and a defensible negative-label source are still required.",
+        "future_integrations": {
+            "drugbank_discovery_api": {
+                "status": "planned",
+                "fields_to_map": ["mechanism_of_action", "management_recommendations", "therapeutic_duplications"]
+            }
+        }
     }
     (destination / "ddinter_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

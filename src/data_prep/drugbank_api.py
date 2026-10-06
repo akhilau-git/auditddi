@@ -13,6 +13,7 @@ import requests
 
 DDI_URL = "https://api.drugbank.com/v1/ddi"
 CLINICAL_DDI_BASE_URL = "https://api.drugbank.com/v1"
+DISCOVERY_API_BASE_URL = "https://api.drugbank.com/discovery/v1"
 
 
 def lookup_product_concept_interactions(
@@ -56,6 +57,46 @@ def lookup_interactions(drugbank_ids: list[str], *, api_key: str | None = None, 
         DDI_URL,
         headers={"Authorization": credential, "Accept": "application/json", "Content-Type": "application/json"},
         json={"drugbank_id": ids},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response
+
+
+def get_discovery_drug(drugbank_id: str, *, api_key: str | None = None, timeout: int = 30) -> requests.Response:
+    """Fetch detailed drug information including interactions from the Discovery API."""
+    drugbank_id = drugbank_id.strip()
+    if not drugbank_id.upper().startswith("DB"):
+        raise ValueError("Only DrugBank IDs are accepted.")
+    
+    credential = api_key or os.environ.get("AUDITDDI_DRUGBANK_API_KEY")
+    if not credential:
+        raise RuntimeError("Set AUDITDDI_DRUGBANK_API_KEY in the environment.")
+        
+    url = f"{DISCOVERY_API_BASE_URL}/drugs/{drugbank_id}"
+    response = requests.get(
+        url,
+        headers={"Authorization": credential, "Accept": "application/json"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response
+
+
+def get_discovery_interactions(drugbank_id: str, *, api_key: str | None = None, timeout: int = 30) -> requests.Response:
+    """Fetch interactions for a drug from the Discovery API to get mechanisms and management recommendations."""
+    drugbank_id = drugbank_id.strip()
+    if not drugbank_id.upper().startswith("DB"):
+        raise ValueError("Only DrugBank IDs are accepted.")
+    
+    credential = api_key or os.environ.get("AUDITDDI_DRUGBANK_API_KEY")
+    if not credential:
+        raise RuntimeError("Set AUDITDDI_DRUGBANK_API_KEY in the environment.")
+        
+    url = f"{DISCOVERY_API_BASE_URL}/drugs/{drugbank_id}/drug_interactions"
+    response = requests.get(
+        url,
+        headers={"Authorization": credential, "Accept": "application/json"},
         timeout=timeout,
     )
     response.raise_for_status()
