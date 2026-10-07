@@ -1,279 +1,153 @@
-import pytest
-import pandas as pd
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 
-import src.data_prep.splits as splits_module
-
-from src.data_prep.splits import (
-    canonical_pair,
-    deduplicate_unordered_pairs,
-    build_binary_pair_dataset,
-    create_split_aware_binary_splits,
-    create_splits,
-    _split_dataframe
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.data_prep.build_event_table import build_event_table, save_event_table  # noqa: E402
+from src.data_prep.make_splits import main as make_splits_main  # noqa: E402
+from src.data_prep.multilabel_splits import (  # noqa: E402
+    assert_clean,
+    audit_split,
+    cold_drug_split,
+    event_support,
+    random_pair_split,
+    scaffold_split,
+    scaled_min_pairs,
+    transductive_split,
 )
 
-def test_canonical_pair_ordering():
-    """Test that reversed pairs are canonicalized correctly."""
-    assert canonical_pair('DrugA', 'DrugB') == ('DrugA', 'DrugB')
-    assert canonical_pair('DrugB', 'DrugA') == ('DrugA', 'DrugB')
-    assert canonical_pair('A', 'A') == ('A', 'A')
 
-    with pytest.raises(ValueError):
-        canonical_pair(np.nan, 'DrugB')
-        
-    with pytest.raises(ValueError):
-        canonical_pair('', 'DrugB')
-
-def test_deduplicate_unordered_pairs_raises_on_conflict():
-    """Test that conflicting labels for the same unordered pair raise an error."""
-    df = pd.DataFrame({
-        'source': ['DrugA', 'DrugB', 'DrugC'],
-        'target': ['DrugB', 'DrugA', 'DrugD'],
-        'label': [1.0, 0.0, 1.0] # DrugA-DrugB has both 1.0 and 0.0
-    })
-    
-    with pytest.raises(ValueError, match="Found unordered drug pairs with conflicting labels"):
-        deduplicate_unordered_pairs(df, 'source', 'target', 'label')
-
-def test_deduplicate_unordered_pairs_keeps_first():
-    """Test that identical labels for the same unordered pair are deduplicated."""
-    df = pd.DataFrame({
-        'source': ['DrugA', 'DrugB', 'DrugC'],
-        'target': ['DrugB', 'DrugA', 'DrugD'],
-        'label': [1.0, 1.0, 1.0] # DrugA-DrugB is consistently 1.0
-    })
-    dedup = deduplicate_unordered_pairs(df, 'source', 'target', 'label')
-    assert len(dedup) == 2
-    # The pairs should be canonicalized
-    assert list(dedup['source'].values) == ['DrugA', 'DrugC']
-    assert list(dedup['target'].values) == ['DrugB', 'DrugD']
+def synth_table(n_drugs=80, density=0.35, n_events=40, seed=0):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n_drugs):
+        for j in range(i + 1, n_drugs):
+            if rng.random() < density:
+                k = rng.integers(1, 6)
+                for e in rng.choice(n_events, size=k, replace=False):
+                    rows.append((f"D{i:03d}", f"D{j:03d}", f"ev{e}"))
+    t, _ = build_event_table(pd.DataFrame(rows, columns=["source", "target", "interaction_type"]))
+    return t
 
 
-def test_deduplicate_unordered_pairs_uses_vectorized_canonicalization(monkeypatch):
-    """Large Colab inputs must not invoke the scalar helper once per row."""
-    dataframe = pd.DataFrame({
-        'source': ['DrugB', 'DrugA', 'DrugD'],
-        'target': ['DrugA', 'DrugB', 'DrugC'],
-        'label': [1.0, 1.0, 1.0],
-    })
-
-    def scalar_helper_must_not_run(*_args, **_kwargs):
-        raise AssertionError('pair canonicalization must be vectorized')
-
-    monkeypatch.setattr(splits_module, 'canonical_pair', scalar_helper_must_not_run)
-    result = splits_module.deduplicate_unordered_pairs(dataframe, 'source', 'target')
-
-    assert result.to_dict('records') == [
-        {'source': 'DrugA', 'target': 'DrugB', 'label': 1.0},
-        {'source': 'DrugC', 'target': 'DrugD', 'label': 1.0},
-    ]
-
-def test_build_binary_pair_dataset_negative_no_match():
-    """Test that negative samples never match positive pairs in either direction."""
-    positives = pd.DataFrame({
-        'source': ['DrugA', 'DrugC'],
-        'target': ['DrugB', 'DrugD']
-    })
-    
-    dataset = build_binary_pair_dataset(positives, neg_ratio=2.0)
-    
-    # Extract canonical positive keys
-    pos_keys = set(canonical_pair(row.source, row.target) for _, row in dataset[dataset['label'] == 1.0].iterrows())
-    # Extract canonical negative keys
-    neg_keys = set(canonical_pair(row.source, row.target) for _, row in dataset[dataset['label'] == 0.0].iterrows())
-    
-    # Ensure no overlap
-    assert pos_keys.isdisjoint(neg_keys)
-    # Ensure exact number of expected negatives
-    assert len(neg_keys) == len(pos_keys) * 2
-
-def test_create_splits_no_leakage_and_reversed_pairs():
-    """Test that S1/S2 splits do not contain seen drugs, preventing leakage."""
-    # Create a synthetic dataset with enough pairs
-    drugs = [f'Drug{i}' for i in range(10)]
-    pairs = []
-    for i in range(len(drugs)):
-        for j in range(i+1, len(drugs)):
-            pairs.append((drugs[i], drugs[j], 1.0))
-            pairs.append((drugs[j], drugs[i], 1.0)) # Add reversed duplicates explicitly
-            
-    df = pd.DataFrame(pairs, columns=['drug1_id', 'drug2_id', 'label'])
-    
-    splits = create_splits(df, holdout_fraction=0.3)
-    
-    trans_train = splits['transductive_train']
-    s1_test = splits['s1_test']
-    s2_test = splits['s2_test']
-    
-    seen_drugs = set(trans_train['drug1_id']).union(set(trans_train['drug2_id']))
-    
-    s1_drugs_a = set(s1_test['drug1_id'])
-    s1_drugs_b = set(s1_test['drug2_id'])
-    s1_all_drugs = s1_drugs_a.union(s1_drugs_b)
-    
-    # S1 must only contain completely unseen drugs
-    assert s1_all_drugs.isdisjoint(seen_drugs)
-    
-    # Check S2 - exactly one drug per pair must be unseen
-    for _, row in s2_test.iterrows():
-        a_seen = row['drug1_id'] in seen_drugs
-        b_seen = row['drug2_id'] in seen_drugs
-        assert a_seen != b_seen # XOR condition
-
-def test_split_dataframe_safely_handles_empty_or_one_class():
-    """Test that empty or one-class splits are reported safely rather than crashing."""
-    empty_df = pd.DataFrame(columns=['source', 'target', 'label'])
-    train, test = _split_dataframe(empty_df, 'label', test_size=0.2, seed=42)
-    assert train.empty
-    assert test.empty
-    
-    one_class_df = pd.DataFrame({
-        'source': ['DrugA', 'DrugB'],
-        'target': ['DrugC', 'DrugD'],
-        'label': [1.0, 1.0]
-    })
-    
-    # Should fallback to unstratified split instead of crashing
-    train, test = _split_dataframe(one_class_df, 'label', test_size=0.5, seed=42)
-    assert len(train) == 1
-    assert len(test) == 1
+def fake_scaffold(smiles: str) -> str:
+    # groups of 4 consecutive drugs share a scaffold: D000-D003 -> S0 ...
+    return f"S{int(smiles[1:]) // 4}"
 
 
-def test_split_aware_negatives_are_disjoint_unreported_and_follow_cold_start_groups():
-    drugs = [f'Drug{index}' for index in range(30)]
-    generator = np.random.default_rng(7)
-    positive_rows = [
-        (drugs[first], drugs[second])
-        for first in range(len(drugs))
-        for second in range(first + 1, len(drugs))
-        if generator.random() < 0.25
-    ]
-    positives = pd.DataFrame(positive_rows, columns=['source', 'target'])
-    groups = splits_module._cold_start_groups(
-        positives, 'source', 'target', holdout_fraction=0.60, seed=42
-    )
+class TestSplits(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.t = synth_table()
 
-    split_frames, audit = create_split_aware_binary_splits(
-        positives,
-        known_reported_positive_pairs=positives,
-        source_col='source',
-        target_col='target',
-        holdout_fraction=0.60,
-        seed=42,
-        negative_sampling_strategy='uniform',
-    )
+    # ---- every pair accounted for --------------------------------------
+    def test_partition_accounting(self):
+        n = self.t.n_pairs
+        for res in (
+            random_pair_split(self.t.pairs, seed=1),
+            transductive_split(self.t.pairs, seed=1),
+            cold_drug_split(self.t.pairs, len(self.t.drugs), seed=1),
+            scaffold_split(self.t.pairs, self.t.drugs, seed=1, scaffold_fn=fake_scaffold),
+        ):
+            total = len(res.train) + sum(len(v) for k, v in res.val.items() if k != "all" or "s2" not in res.val)
+            total += sum(len(v) for v in res.test.values()) + len(res.dropped)
+            self.assertEqual(total, n, res.kind)
+            self.assertTrue(all(assert_clean(res, self.t.pairs).values()), res.kind)
 
-    known_keys = {
-        canonical_pair(row.source, row.target) for row in positives.itertuples(index=False)
-    }
-    all_negative_keys = set()
-    for name, frame in split_frames.items():
-        positives_in_split = frame[frame['label'] == 1.0]
-        negatives_in_split = frame[frame['label'] == 0.0]
-        assert len(positives_in_split) == len(negatives_in_split)
-        negative_keys = {
-            canonical_pair(row.source, row.target)
-            for row in negatives_in_split.itertuples(index=False)
-        }
-        assert known_keys.isdisjoint(negative_keys)
-        assert all_negative_keys.isdisjoint(negative_keys)
-        all_negative_keys.update(negative_keys)
-        assert set(negatives_in_split['label_evidence']) == {
-            'unreported_twosides_split_aware_sampled'
-        }
-        if name == 's1_test':
-            assert all(
-                row.source in groups['s1_test'] and row.target in groups['s1_test']
-                for row in negatives_in_split.itertuples(index=False)
-            )
-        if name == 's2_test':
-            assert all(
-                (row.source in groups['s1_test']) != (row.target in groups['s1_test'])
-                and (row.source in groups['seen']) != (row.target in groups['seen'])
-                for row in negatives_in_split.itertuples(index=False)
-            )
-    assert audit['protocol'] == 'split_aware_unreported_sampling_v1'
-    assert audit['unique_sampled_negative_pairs'] == len(all_negative_keys)
+    # ---- transductive: no unseen drugs -----------------------------------
+    def test_transductive_all_drugs_seen(self):
+        res = transductive_split(self.t.pairs, seed=3)
+        a, b = self.t.pairs.drug_a.to_numpy(), self.t.pairs.drug_b.to_numpy()
+        seen = set(a[res.train]) | set(b[res.train])
+        for part in (res.val["all"], res.test["all"]):
+            self.assertTrue(set(a[part]) <= seen and set(b[part]) <= seen)
+        self.assertEqual(len(set(res.train) & set(res.test["all"])), 0)   # no exact pair overlap
 
+    # ---- cold drug: S1 / S2 definitions -----------------------------------
+    def test_cold_drug_s1_s2(self):
+        res = cold_drug_split(self.t.pairs, len(self.t.drugs), 0.1, 0.2, seed=2)
+        a, b = self.t.pairs.drug_a.to_numpy(), self.t.pairs.drug_b.to_numpy()
+        role = res.drug_role
+        self.assertTrue((role[a[res.train]] == 0).all() and (role[b[res.train]] == 0).all())
+        s1, s2 = res.test["s1"], res.test["s2"]
+        self.assertGreater(len(s1), 0)
+        self.assertGreater(len(s2), 0)
+        self.assertTrue(((role[a[s1]] == 2) & (role[b[s1]] == 2)).all())                  # both unseen
+        self.assertTrue((((role[a[s2]] == 2).astype(int) + (role[b[s2]] == 2)) == 1).all())  # exactly one unseen
+        n_test_drugs = (role == 2).sum()
+        self.assertEqual(n_test_drugs, round(len(self.t.drugs) * 0.2))
+        # a test drug never appears in any training pair
+        test_drugs = set(np.where(role == 2)[0])
+        self.assertFalse(test_drugs & (set(a[res.train]) | set(b[res.train])))
 
-def test_split_aware_sampler_forbids_reported_pairs_omitted_by_a_data_cap():
-    positive_frame = pd.DataFrame({
-        'source': ['DrugA'], 'target': ['DrugB'], 'label': [1.0],
-    })
-    negatives, keys, summary = splits_module._sample_partition_negatives(
-        positive_frame,
-        candidate_drugs={'DrugA', 'DrugB', 'DrugC', 'DrugD'},
-        is_eligible_pair=lambda _first, _second: True,
-        forbidden_keys={canonical_pair('DrugA', 'DrugB'), canonical_pair('DrugC', 'DrugD')},
-        source_col='source',
-        target_col='target',
-        neg_ratio=4.0,
-        seed=42,
-        negative_sampling_strategy='uniform',
-        max_attempt_multiplier=100,
-    )
+    # ---- scaffold: zero overlap -------------------------------------------
+    def test_scaffold_disjoint(self):
+        res = scaffold_split(self.t.pairs, self.t.drugs, 0.1, 0.2, seed=4, scaffold_fn=fake_scaffold)
+        scaf = res.meta["scaffold_of_drug"]
+        role = res.drug_role
+        tr = {scaf[i] for i in np.where(role == 0)[0]}
+        held = {scaf[i] for i in np.where(role != 0)[0]}
+        self.assertFalse(tr & held)
+        self.assertTrue(audit_split(res, self.t.pairs)["no_scaffold_overlap_train_vs_held_out"])
+        self.assertGreater(len(res.test["s1"]) + len(res.test["s2"]), 0)
 
-    assert len(negatives) == 4
-    assert len(keys) == 4
-    assert summary['sampled_negatives'] == 4
-    assert canonical_pair('DrugC', 'DrugD') not in keys
+    def test_audit_detects_leakage(self):
+        res = cold_drug_split(self.t.pairs, len(self.t.drugs), seed=5)
+        res.train = np.sort(np.concatenate([res.train, res.test["s1"][:5]]))     # inject leakage
+        self.assertFalse(all(audit_split(res, self.t.pairs).values()))
+        with self.assertRaises(AssertionError):
+            assert_clean(res, self.t.pairs)
 
+    def test_audit_detects_scaffold_leak(self):
+        res = scaffold_split(self.t.pairs, self.t.drugs, seed=6, scaffold_fn=fake_scaffold)
+        self.assertTrue(audit_split(res, self.t.pairs)["no_scaffold_overlap_train_vs_held_out"])
+        scaf = list(res.meta["scaffold_of_drug"])
+        held = int(np.where(res.drug_role != 0)[0][0])
+        train_drug = int(np.where(res.drug_role == 0)[0][0])
+        scaf[train_drug] = scaf[held]                       # a training drug now shares a held-out scaffold
+        res.meta["scaffold_of_drug"] = scaf
+        self.assertFalse(audit_split(res, self.t.pairs)["no_scaffold_overlap_train_vs_held_out"])
 
-def test_split_aware_sampler_handles_saturated_partition():
-    # Only 3 drugs: DrugA, DrugB, DrugC -> Total possible pairs is 3: (A,B), (A,C), (B,C)
-    # Positive pairs: (A,B) and (A,C)
-    # Only 1 unreported pair exists: (B,C)
-    # If neg_ratio requests 2 negatives, it should sample 1 without crashing
-    positive_frame = pd.DataFrame({
-        'source': ['DrugA', 'DrugA'],
-        'target': ['DrugB', 'DrugC'],
-        'label': [1.0, 1.0],
-    })
-    with pytest.warns(UserWarning, match='Split-aware negative sampling saturated'):
-        negatives, keys, summary = splits_module._sample_partition_negatives(
-            positive_frame,
-            candidate_drugs={'DrugA', 'DrugB', 'DrugC'},
-            is_eligible_pair=lambda _first, _second: True,
-            forbidden_keys={canonical_pair('DrugA', 'DrugB'), canonical_pair('DrugA', 'DrugC')},
-            source_col='source',
-            target_col='target',
-            neg_ratio=1.0,
-            seed=42,
-            negative_sampling_strategy='uniform',
-            max_attempt_multiplier=10,
-        )
-    assert len(negatives) == 1
-    assert canonical_pair('DrugB', 'DrugC') in keys
+    # ---- reproducibility ---------------------------------------------------
+    def test_deterministic_and_seed_sensitive(self):
+        a = cold_drug_split(self.t.pairs, len(self.t.drugs), seed=7)
+        b = cold_drug_split(self.t.pairs, len(self.t.drugs), seed=7)
+        c = cold_drug_split(self.t.pairs, len(self.t.drugs), seed=8)
+        self.assertEqual(a.digest(), b.digest())
+        self.assertNotEqual(a.digest(), c.digest())
 
+    def test_event_support_flags_rare_events(self):
+        from src.data_prep.build_event_table import freeze_vocabulary
 
-def test_build_binary_pair_dataset_forbids_omitted_known_positives():
-    # 4 drugs: A, B, C, D
-    # Subsampled positives in partition: (DrugA, DrugB) and (DrugC, DrugD)
-    # Another known positive exists: (DrugA, DrugC)
-    # When sampling negatives from {A, B, C, D}, (DrugA, DrugC) must never be sampled as a negative.
-    positives = pd.DataFrame({
-        'source': ['DrugA', 'DrugC'],
-        'target': ['DrugB', 'DrugD'],
-    })
-    all_known = pd.DataFrame({
-        'source': ['DrugA', 'DrugC', 'DrugA'],
-        'target': ['DrugB', 'DrugD', 'DrugC'],
-    })
+        res = random_pair_split(self.t.pairs, seed=1)
+        v = freeze_vocabulary(self.t.Y, res.train, self.t.events, min_train_pairs=3)
+        sup = event_support(self.t.Y, v, {"train": res.train, "test": res.test["all"]}, min_pos=5)
+        self.assertEqual(len(sup), len(v))
+        self.assertIn("evaluable_test", sup.columns)
 
-    dataset = splits_module.build_binary_pair_dataset(
-        positives,
-        source_col='source',
-        target_col='target',
-        neg_ratio=1.0,
-        seed=42,
-        known_reported_positive_pairs=all_known,
-    )
-    assert len(dataset) == 4
-    neg_pairs = dataset[dataset['label'] == 0.0]
-    assert len(neg_pairs) == 2
-    for _, row in neg_pairs.iterrows():
-        pair = canonical_pair(str(row['source']), str(row['target']))
-        assert pair != canonical_pair('DrugA', 'DrugC'), "Cross-partition known positive was sampled as negative!"
+    def test_scaled_min_pairs(self):
+        self.assertEqual(scaled_min_pairs(750, 63473, 63473), 750)
+        self.assertEqual(scaled_min_pairs(750, 31736, 63473), 375)   # half the pairs -> half the threshold
+        self.assertEqual(scaled_min_pairs(750, 31737, 63473), 376)   # always rounds up
+
+    # ---- end to end through the CLI ------------------------------------------
+    def test_cli_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            tdir, sdir = Path(d) / "table", Path(d) / "splits"
+            save_event_table(self.t, tdir, {})
+            make_splits_main(["--table", str(tdir), "--out", str(sdir), "--seeds", "0", "1",
+                              "--kinds", "transductive", "cold_drug", "random_pair",
+                              "--min-pairs-full", "60"])
+            self.assertTrue((sdir / "splits_manifest.json").exists())
+            self.assertTrue((sdir / "cold_drug_seed1_vocab.csv").exists())
+            v = pd.read_csv(sdir / "cold_drug_seed0_vocab.csv")
+            self.assertIn("pos_weight", v.columns)
+            self.assertTrue((v.pos_weight > 0).all())
 
 
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
