@@ -77,3 +77,35 @@ class TestRunBaselines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSelectiveAnalysisEndToEnd(unittest.TestCase):
+    def test_pipeline_to_abstention_files(self):
+        from src.trust.selective_analysis import main as sel_main
+
+        t, F = planted_table(n_drugs=90, n_events=25, seed=3)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            save_event_table(t, d / "table", {})
+            splits_main(["--table", str(d / "table"), "--out", str(d / "splits"), "--seeds", "0",
+                         "--kinds", "cold_drug", "--min-pairs-full", "500"])
+            (d / "out").mkdir()
+            np.savez_compressed(d / "out" / "ecfp6_r3_1024.npz", bits=F[t.drugs.drug_idx.to_numpy()],
+                                valid=np.ones(len(t.drugs), bool),
+                                smiles_sha256=np.array(smiles_list_hash(t.drugs["smiles"].tolist())))
+            run_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--out", str(d / "out"),
+                      "--names", "cold_drug_seed0", "--models", "logreg", "--epochs", "10", "--min-pos", "3", "--save-scores"])
+            self.assertTrue(any((d / "out").glob("scores_cold_drug_seed0_logreg_symmetric_val.npz")))   # val scores now saved
+            sel_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--baselines", str(d / "out"),
+                      "--names", "cold_drug_seed0", "--models", "logreg", "--n-boot", "10", "--min-pos", "3"])
+            rc = pd.read_csv(d / "out" / "risk_coverage.csv")
+            self.assertEqual(set(rc.reliability), {"ad_min", "ad_mean", "top20_mean", "random"})
+            self.assertTrue({"test_s1", "test_s2"} <= set(rc.partition))
+            full = rc[(rc.coverage == 1.0)].groupby(["partition"]).macro_auroc.nunique()
+            self.assertTrue((full == 1).all())          # at coverage 1.0 every reliability score gives the same number
+            dep = pd.read_csv(d / "out" / "deployed_abstention.csv")
+            self.assertTrue(((dep.realised_coverage >= 0) & (dep.realised_coverage <= 1)).all())
+            # the AD gate must discriminate: it keeps more one-new-drug pairs than both-new-drug pairs
+            m = dep[(dep.reliability == "ad_mean") & (dep.target_coverage_on_val == 0.75)].set_index("partition").realised_coverage
+            self.assertGreater(m["test_s2"], m["test_s1"])
+            self.assertTrue((pd.read_csv(d / "out" / "abstention_gain.csv").ci_low <= pd.read_csv(d / "out" / "abstention_gain.csv").ci_high).all())

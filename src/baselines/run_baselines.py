@@ -133,7 +133,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                         row["order_sensitivity_mean_abs"] = float(np.abs(swapped - scores[k]).mean())
                     row.update(m)
                     rows.append(row)
-                    if a.save_scores and k != "val":
+                    if a.save_scores:
                         np.savez_compressed(a.out / f"scores_{name}_{mname}_{mode}_{k}.npz", S=scores[k].astype(np.float16), rows=parts[k])
                 append_results(res_path, rows)
                 t = [r for r in rows if r["partition"].startswith("test")]
