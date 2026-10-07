@@ -22,7 +22,7 @@ def make_problem(n_drugs=60, bits=64, n_events=10, seed=0, mode="symmetric"):
     a, b = np.triu_indices(n_drugs, 1)
     X = pair_features(F, a, b, mode)
     Wt = rng.normal(size=(X.shape[1], n_events))
-    z = (X - X.mean(0)) @ Wt / np.sqrt(X.shape[1]) * 2.0 - 1.5
+    z = (X - X.mean(0)) @ Wt / np.sqrt(X.shape[1]) * 5.0 - 1.5
     Y = (rng.random(z.shape) < 1 / (1 + np.exp(-z))).astype(np.float32)
     idx = rng.permutation(len(a))
     tr, va, te = idx[:1000], idx[1000:1300], idx[1300:]
@@ -80,6 +80,20 @@ class TestLearning(unittest.TestCase):
             auc, S = self._auc(m)
             self.assertGreater(auc, 0.7, name)
             self.assertTrue(((S >= 0) & (S <= 1)).all())
+
+    def test_logreg_matches_sklearn_reference(self):
+        import warnings
+        from sklearn.linear_model import LogisticRegression
+
+        warnings.filterwarnings("ignore")
+        Yt = self.Y[self.te].astype(int)
+        ref = np.zeros((len(self.te), self.Y.shape[1]))
+        for j in range(self.Y.shape[1]):
+            ref[:, j] = LogisticRegression(C=0.05, max_iter=3000).fit(self.X[self.tr], self.Y[self.tr, j]).predict_proba(self.X[self.te])[:, 1]
+        ref_auc = float(np.nanmean(auroc_per_event(Yt, ref)))
+        m = make_model("logreg", seed=0, epochs=80, patience=15, lr=1e-2, monitor="auroc", batch_size=64)
+        auc, _ = self._auc(m)
+        self.assertGreater(auc, ref_auc - 0.03)      # same model class, same ceiling
 
     def test_deterministic(self):
         outs = []

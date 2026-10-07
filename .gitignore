@@ -87,6 +87,13 @@ results/
 backend/experiments/
 backend/new results 5-9-26/
 
+# Research data and licensed/source API material belong in Google Drive, not Git.
+/auditddi-data/
+/auditddi-results/
+**/DrugBank/raw/
+**/drugbank_api_cache/
+**/drugbank_responses/
+
 # Deliverable binaries (PowerPoint, etc.) — too large and binary for git.
 deliverables/
 
