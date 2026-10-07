@@ -59,7 +59,7 @@ class TestBuild(unittest.TestCase):
 
     def test_reversed_rows_same_pair(self):
         d = {s: i for i, s in zip(self.t.drugs.drug_idx, self.t.drugs.smiles)}
-        pid = self.t.pairs.query("drug_a==@d['A'] and drug_b==@d['B']").pair_id.iloc[0]
+        pid = self.t.pairs[(self.t.pairs.drug_a == d['A']) & (self.t.pairs.drug_b == d['B'])].pair_id.iloc[0]
         ev = {e: i for i, e in zip(self.t.events.event_idx, self.t.events.event)}
         self.assertEqual(self.t.Y[pid, ev["nausea"]], 1)
         self.assertEqual(self.t.Y[pid, ev["x"]], 1)
