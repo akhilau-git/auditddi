@@ -12,7 +12,14 @@ def test_load_drug_names_accepts_twosides_catalog(tmp_path: Path) -> None:
     path = tmp_path / "twosides_drugs.csv"
     path.write_text("drug_name,drug_id\nAspirin,1\naspirin,2\nWarfarin,3\n", encoding="utf-8")
 
-    assert load_drug_names(path) == ["Aspirin", "aspirin", "Warfarin"]
+    assert load_drug_names(path) == (["Aspirin", "aspirin", "Warfarin"], "drug_name")
+
+
+def test_load_drug_ids_when_catalog_has_only_drug_id(tmp_path: Path) -> None:
+    path = tmp_path / "twosides_drugs.csv"
+    path.write_text("drug_id\nAspirin\nWarfarin\n", encoding="utf-8")
+
+    assert load_drug_names(path) == (["Aspirin", "Warfarin"], "drug_id")
 
 
 def test_collect_source_writes_cached_json_and_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,7 +28,9 @@ def test_collect_source_writes_cached_json_and_manifest(tmp_path: Path, monkeypa
         return 200, b'{"idGroup":{"rxnormId":["1"]}}'
 
     monkeypatch.setattr("scripts.collect_public_evidence_colab.fetch_json", fake_fetch)
-    manifest = collect_source("rxnorm", ["Aspirin"], tmp_path, delay=0, timeout=2)
+    manifest = collect_source(
+        "rxnorm", ["Aspirin"], tmp_path, query_column="drug_id", delay=0, timeout=2
+    )
 
     assert manifest["drug_count"] == 1
     assert (tmp_path / "rxnorm" / "Aspirin.json").is_file()

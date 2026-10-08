@@ -43,27 +43,29 @@ def _safe_name(value: str) -> str:
     return cleaned[:100] or "empty"
 
 
-def load_drug_names(path: str | Path) -> list[str]:
-    """Read unique drug names from a CSV, accepting common catalog column names."""
+def load_drug_names(path: str | Path, column: str | None = None) -> tuple[list[str], str]:
+    """Read unique query identifiers from a CSV and return them with the column used."""
     source = Path(path)
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
             raise ValueError(f"Drug catalog has no header: {source}")
         fields = {field.casefold().strip(): field for field in reader.fieldnames}
-        candidates = ("drug_name", "drugname", "name", "drug", "source")
-        column = next((fields[name] for name in candidates if name in fields), None)
-        if column is None:
+        candidates = ("drug_name", "drugname", "name", "drug", "source", "drug_id")
+        selected_column = fields.get(column.casefold().strip()) if column else None
+        if selected_column is None:
+            selected_column = next((fields[name] for name in candidates if name in fields), None)
+        if selected_column is None:
             raise ValueError(
                 f"Could not find a drug-name column in {source}; "
                 f"observed columns: {reader.fieldnames}"
             )
         names = {
-            str(row.get(column, "")).strip()
+            str(row.get(selected_column, "")).strip()
             for row in reader
-            if str(row.get(column, "")).strip()
+            if str(row.get(selected_column, "")).strip()
         }
-    return sorted(names, key=lambda value: (value.casefold(), value))
+    return sorted(names, key=lambda value: (value.casefold(), value)), selected_column
 
 
 def fetch_json(url: str, timeout: int) -> tuple[int, bytes]:
@@ -82,6 +84,7 @@ def collect_source(
     names: list[str],
     output_root: Path,
     *,
+    query_column: str,
     delay: float,
     timeout: int,
     overwrite: bool = False,
@@ -120,6 +123,7 @@ def collect_source(
         }[source],
         "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
         "drug_count": len(names),
+        "query_column": query_column,
         "records": records,
     }
     manifest_path = folder / "source_manifest.json"
@@ -131,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--drug-file", type=Path, required=True)
+    parser.add_argument(
+        "--drug-column",
+        help="Column containing query identifiers; defaults to common names, then drug_id.",
+    )
     parser.add_argument("--source", action="append", choices=sorted(ENDPOINTS), default=list(ENDPOINTS))
     parser.add_argument("--delay", type=float, default=0.25)
     parser.add_argument("--timeout", type=int, default=30)
@@ -139,10 +147,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.delay < 0 or args.timeout <= 0:
         parser.error("--delay must be non-negative and --timeout must be positive")
     try:
-        names = load_drug_names(args.drug_file)
+        names, query_column = load_drug_names(args.drug_file, args.drug_column)
         manifests = {
             source: collect_source(
-                source, names, args.data_root, delay=args.delay,
+                source, names, args.data_root, query_column=query_column, delay=args.delay,
                 timeout=args.timeout, overwrite=args.overwrite,
             )
             for source in args.source
@@ -153,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({
         "data_root": str(args.data_root.resolve()),
         "drug_count": len(names),
+        "query_column": query_column,
         "sources": {source: manifest["drug_count"] for source, manifest in manifests.items()},
     }, indent=2))
     return 0

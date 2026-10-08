@@ -103,6 +103,7 @@ TWOSIDES again and does not turn regulatory evidence into DDI labels.
 !python /content/drive/MyDrive/AuditDDI/scripts/collect_public_evidence_colab.py \
   --data-root /content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data \
   --drug-file /content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data/twosides/twosides_drugs.csv \
+  --drug-column drug_id \
   --source rxnorm \
   --source openfda \
   --source dailymed \
