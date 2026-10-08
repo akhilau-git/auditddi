@@ -120,6 +120,17 @@ checkpoint directory is available to a running container.
 
 ## Colab training
 
+### Collecting source datasets
+
+The implementation guide's source list and the fail-closed Colab acquisition
+procedure are documented in
+[docs/DATA_ACQUISITION_COLAB.md](docs/DATA_ACQUISITION_COLAB.md). The collector
+creates `auditddi-data/<source>/` folders inside the project checkout and
+writes a hashed `collection_manifest.json`. It requires explicit official or
+authorized URLs, keeps sources separate, and does not treat absent records as
+negative labels. Do not collect DrugBank or Medi-Span without written
+permission.
+
 Training is intentionally run in Google Colab with a GPU. Install the
 Colab-compatible non-PyTorch packages from `requirements_colab.txt`, set
 `AUDITDDI_DATA_BASE` to the Drive data directory when needed, and run
