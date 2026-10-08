@@ -92,3 +92,32 @@ and DDInter files, and records missing folders as `needs_review`. It does not
 change source files and it does not treat a folder's existence as proof of
 license, release identity, or training use. DrugBank and Medi-Span remain
 explicitly excluded.
+
+## Collect RxNorm, openFDA, and DailyMed evidence
+
+After verifying the existing sources, use the TWOSIDES drug catalog as the
+query list. This performs cached public API retrieval; it does not download
+TWOSIDES again and does not turn regulatory evidence into DDI labels.
+
+```python
+!python /content/drive/MyDrive/AuditDDI/scripts/collect_public_evidence_colab.py \
+  --data-root /content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data \
+  --drug-file /content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data/twosides/twosides_drugs.csv \
+  --source rxnorm \
+  --source openfda \
+  --source dailymed \
+  --delay 0.5
+```
+
+The command writes raw JSON responses and a manifest under:
+
+```text
+auditddi-data/rxnorm/
+auditddi-data/openfda/
+auditddi-data/dailymed/
+```
+
+Each source manifest records the queried drug name, exact URL, retrieval time,
+HTTP result, byte count, and SHA-256. HTTP errors are retained and marked
+rather than silently treated as successful matches. These API queries provide
+identity or regulatory evidence only; they are not pairwise DDI truth.
