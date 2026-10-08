@@ -71,6 +71,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
             min_tr = scaled_min_pairs(a.min_pairs_full, len(res.train), table.n_pairs)
             vocab = freeze_vocabulary(table.Y, res.train, table.events, min_train_pairs=min_tr)
+            if len(vocab) == 0:
+                raise ValueError(
+                    f"{kind} seed {seed}: no event has >= {min_tr} training pairs "
+                    f"(--min-pairs-full {a.min_pairs_full} scaled to {len(res.train)}/{table.n_pairs} training pairs). "
+                    "Lower --min-pairs-full or check the event table.")
             w = pos_weights(vocab)
             vocab["pos_weight"] = w
             vocab.to_csv(a.out / f"{name}_vocab.csv", index=False)

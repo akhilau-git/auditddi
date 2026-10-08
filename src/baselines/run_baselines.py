@@ -28,6 +28,7 @@ from src.baselines.fingerprints import N_BITS, RADIUS, ecfp6_matrix, pair_featur
 from src.baselines.models import make_model
 from src.data_prep.build_event_table import labels_for, load_event_table
 from src.evaluation.multilabel_metrics import best_global_threshold, evaluate
+from src.features.drug_features import biology_known, feature_matrix, load_store, stratum_of_pairs
 
 
 def load_fingerprints(drugs: pd.DataFrame, path: Path) -> np.ndarray:
@@ -80,13 +81,27 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--fingerprints", type=Path, default=None, help="ECFP6 cache (.npz); default <out>/ecfp6_r3_1024.npz")
+    ap.add_argument("--feature-store", type=Path, default=None, help="drug_features.npz from src.features.drug_features")
+    ap.add_argument("--features", nargs="+", default=["ecfp"], choices=["ecfp", "target", "gene"],
+                    help="blocks to concatenate; with --feature-store, results are also stratified by biology availability")
     ap.add_argument("--save-scores", action="store_true", help="store float16 test scores for paired tests later")
     ap.add_argument("--min-pos", type=int, default=5)
     a = ap.parse_args(list(argv) if argv is not None else None)
 
     a.out.mkdir(parents=True, exist_ok=True)
     table = load_event_table(a.table)
-    F = load_fingerprints(table.drugs, a.fingerprints or a.out / "ecfp6_r3_1024.npz")
+    if a.feature_store is not None:
+        store = load_store(a.feature_store, table.drugs)
+        F = feature_matrix(store, a.features)
+        known = biology_known(store)
+        print(f"feature store: blocks={a.features} dim={F.shape[1]} drugs with any real biology: {int(known.sum())}/{len(known)}")
+    else:
+        if a.features != ["ecfp"]:
+            raise SystemExit("--features other than ecfp need --feature-store")
+        F = load_fingerprints(table.drugs, a.fingerprints or a.out / "ecfp6_r3_1024.npz").astype(np.float32)
+        known = None
+    flabel = "+".join(a.features)
+    stratified = known is not None
     A = table.pairs["drug_a"].to_numpy()
     B = table.pairs["drug_b"].to_numpy()
 
@@ -95,12 +110,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     done = set()
     if res_path.exists():
         prev = pd.read_csv(res_path)
-        done = set(zip(prev["split"], prev["model"], prev["pair_mode"]))
+        if "features" not in prev:
+            prev["features"] = "ecfp"
+        if "stratified" not in prev:
+            prev["stratified"] = False
+        prev["features"] = prev["features"].fillna("ecfp")
+        prev["stratified"] = prev["stratified"].fillna(False).astype(bool)
+        done = set(zip(prev["split"], prev["model"], prev["pair_mode"], prev["features"], prev["stratified"]))
 
     for name in names:
         split = {k: v for k, v in np.load(a.splits / f"{name}.npz").items()}
         info = json.loads((a.splits / f"{name}.json").read_text())
         vocab = pd.read_csv(a.splits / f"{name}_vocab.csv", keep_default_na=False)
+        if len(vocab) == 0:
+            raise ValueError(f"{name}: empty event vocabulary; regenerate the splits with a lower --min-pairs-full")
         parts = partitions_of(split)
         tr = split["train"]
         Ytr = labels_for(table.Y, tr, vocab)
@@ -110,8 +133,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             Xtr = pair_features(F, A[tr], B[tr], mode)
             Xparts = {k: pair_features(F, A[v], B[v], mode) for k, v in parts.items()}
             for mname in a.models:
-                if (name, mname, mode) in done:
-                    print(f"skip {name} {mname} {mode}")
+                if (name, mname, mode, flabel, stratified) in done:
+                    print(f"skip {name} {mname} {mode} {flabel}")
                     continue
                 t0 = time.time()
                 kw = {}
@@ -125,7 +148,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 for k in parts:
                     m = evaluate(Yparts[k].astype(np.int8), scores[k], threshold=thr, min_pos=a.min_pos)
                     row = {"split": name, "kind": info["kind"], "seed": info["seed"], "model": mname, "pair_mode": mode,
-                           "partition": k, "n_train": int(len(tr)), "n_heads": int(len(vocab)), "train_seconds": round(time.time() - t0, 1),
+                           "features": flabel, "stratified": stratified, "partition": k, "n_train": int(len(tr)), "n_heads": int(len(vocab)), "train_seconds": round(time.time() - t0, 1),
                            "epochs_run": len(getattr(model, "history_", [])), "vocab_sha256": info["vocab"]["sha256"],
                            "split_digest": info["sha256_partition_digest"]}
                     if mode == "concat" and k != "val":
@@ -133,11 +156,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                         row["order_sensitivity_mean_abs"] = float(np.abs(swapped - scores[k]).mean())
                     row.update(m)
                     rows.append(row)
+                    if stratified and k != "val":
+                        st = stratum_of_pairs(known, A[parts[k]], B[parts[k]])
+                        for sv in (0, 1, 2):
+                            sel = np.where(st == sv)[0]
+                            if len(sel) < 50:
+                                continue
+                            ms = evaluate(Yparts[k][sel].astype(np.int8), scores[k][sel], threshold=thr, min_pos=a.min_pos, with_calibration=False)
+                            rows.append({**{kk: vv for kk, vv in row.items() if kk in ("split", "kind", "seed", "model", "pair_mode", "features", "stratified", "n_train", "n_heads", "vocab_sha256", "split_digest")},
+                                         "partition": f"{k}|bio{sv}", **ms})
                     if a.save_scores:
-                        np.savez_compressed(a.out / f"scores_{name}_{mname}_{mode}_{k}.npz", S=scores[k].astype(np.float16), rows=parts[k])
+                        tag = "" if flabel == "ecfp" else "@" + flabel
+                        np.savez_compressed(a.out / f"scores_{name}_{mname}{tag}_{mode}_{k}.npz", S=scores[k].astype(np.float16), rows=parts[k])
                 append_results(res_path, rows)
-                t = [r for r in rows if r["partition"].startswith("test")]
-                print(f"{name:20s} {mname:8s} {mode:9s} " + " | ".join(f"{r['partition']}: AUROC {r['macro_auroc']:.3f} AUPRC {r['macro_auprc']:.3f} (n={r['n_events_evaluable']})" for r in t))
+                t = [r for r in rows if r["partition"].startswith("test") and "|" not in r["partition"]]
+                print(f"{name:20s} {mname:8s} {mode:9s} {flabel:18s} " + " | ".join(f"{r['partition']}: AUROC {r['macro_auroc']:.3f} AUPRC {r['macro_auprc']:.3f} (n={r['n_events_evaluable']})" for r in t))
 
 
 if __name__ == "__main__":
