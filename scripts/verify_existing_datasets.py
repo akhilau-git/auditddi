@@ -68,7 +68,10 @@ def verify_source(data_root: Path, source: str, *, skip_hash: bool = False) -> d
         if not skip_hash:
             record["sha256"] = sha256_file(path)
         file_records.append(record)
-    present = {record["path"] for record in file_records}
+    present = {
+        str(Path(record["path"]).relative_to(source)).replace("\\", "/")
+        for record in file_records
+    }
     missing = sorted(set(spec["required"]) - present)
     expected_hash_results = []
     for relative, expected in EXPECTED_HASHES.items():
