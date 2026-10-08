@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import dataset_audit as da  # noqa: E402
+from src.evaluation import dataset_audit as da  # noqa: E402
 
 ident = lambda s: s  # noqa: E731
 
