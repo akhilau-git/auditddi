@@ -70,3 +70,25 @@ retrieval time, byte count, and SHA-256 digest. A source with no URL is marked
 `not_requested`; it must not be described as collected. The manifest is
 evidence of acquisition only, not proof that a source was used by a training
 run.
+
+## Verify datasets that are already present
+
+Do not download sources that already exist in Drive. Run the read-only
+verifier against the actual shared data root:
+
+```python
+!python /content/drive/MyDrive/AuditDDI/scripts/verify_existing_datasets.py \
+  --data-root /content/drive/MyDrive/auditddi-data
+```
+
+This writes:
+
+```text
+/content/drive/MyDrive/auditddi-data/verification_manifest.json
+```
+
+The manifest records every file's size and SHA-256, checks required TWOSIDES
+and DDInter files, and records missing folders as `needs_review`. It does not
+change source files and it does not treat a folder's existence as proof of
+license, release identity, or training use. DrugBank and Medi-Span remain
+explicitly excluded.

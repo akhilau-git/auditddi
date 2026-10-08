@@ -131,6 +131,11 @@ authorized URLs, keeps sources separate, and does not treat absent records as
 negative labels. Do not collect DrugBank or Medi-Span without written
 permission.
 
+For source folders already present in Drive, use
+`scripts/verify_existing_datasets.py` instead of downloading them again. It
+creates a read-only verification manifest with file sizes, SHA-256 digests,
+required-file checks, and explicit manual-review status.
+
 Training is intentionally run in Google Colab with a GPU. Install the
 Colab-compatible non-PyTorch packages from `requirements_colab.txt`, set
 `AUDITDDI_DATA_BASE` to the Drive data directory when needed, and run
