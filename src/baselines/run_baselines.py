@@ -59,6 +59,22 @@ def append_results(path: Path, rows: list) -> None:
     tmp.replace(path)
 
 
+def drop_matching(path: Path, split: str, model: str, mode: str, features: str, stratified: bool) -> int:
+    """Remove earlier result rows of exactly this run (used by --force) so a rerun
+    REPLACES them instead of duplicating.  Returns how many rows were removed."""
+    if not path.exists():
+        return 0
+    df = pd.read_csv(path)
+    f = df["features"].fillna("ecfp") if "features" in df else pd.Series("ecfp", index=df.index)
+    st = df["stratified"].fillna(False).astype(bool) if "stratified" in df else pd.Series(False, index=df.index)
+    m = (df["split"] == split) & (df["model"] == model) & (df["pair_mode"] == mode) & (f == features) & (st == stratified)
+    if m.any():
+        tmp = path.with_suffix(".csv.tmp")
+        df[~m].to_csv(tmp, index=False)
+        tmp.replace(path)
+    return int(m.sum())
+
+
 def partitions_of(split: dict) -> dict:
     parts = {}
     if "val_all" in split:
@@ -84,6 +100,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--feature-store", type=Path, default=None, help="drug_features.npz from src.features.drug_features")
     ap.add_argument("--features", nargs="+", default=["ecfp"], choices=["ecfp", "target", "gene"],
                     help="blocks to concatenate; with --feature-store, results are also stratified by biology availability")
+    ap.add_argument("--force", action="store_true", help="retrain even if this run is already in results.csv; its old rows are replaced")
     ap.add_argument("--save-scores", action="store_true", help="store float16 test scores for paired tests later")
     ap.add_argument("--min-pos", type=int, default=5)
     a = ap.parse_args(list(argv) if argv is not None else None)
@@ -133,7 +150,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             Xtr = pair_features(F, A[tr], B[tr], mode)
             Xparts = {k: pair_features(F, A[v], B[v], mode) for k, v in parts.items()}
             for mname in a.models:
-                if (name, mname, mode, flabel, stratified) in done:
+                if (name, mname, mode, flabel, stratified) in done and not a.force:
                     print(f"skip {name} {mname} {mode} {flabel}")
                     continue
                 t0 = time.time()
@@ -168,6 +185,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     if a.save_scores:
                         tag = "" if flabel == "ecfp" else "@" + flabel
                         np.savez_compressed(a.out / f"scores_{name}_{mname}{tag}_{mode}_{k}.npz", S=scores[k].astype(np.float16), rows=parts[k])
+                if a.force:
+                    n_old = drop_matching(res_path, name, mname, mode, flabel, stratified)
+                    if n_old:
+                        print(f"--force: replaced {n_old} earlier rows of {name} {mname} {mode} {flabel}")
                 append_results(res_path, rows)
                 t = [r for r in rows if r["partition"].startswith("test") and "|" not in r["partition"]]
                 print(f"{name:20s} {mname:8s} {mode:9s} {flabel:18s} " + " | ".join(f"{r['partition']}: AUROC {r['macro_auroc']:.3f} AUPRC {r['macro_auprc']:.3f} (n={r['n_events_evaluable']})" for r in t))

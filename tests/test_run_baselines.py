@@ -135,3 +135,27 @@ class TestCalibrationRunnerEndToEnd(unittest.TestCase):
             self.assertAlmostEqual(s2.loc["platt", "macro_auroc"], s2.loc["raw", "macro_auroc"], delta=0.01)   # ranking untouched
             self.assertIn("coverage_positive_macro", r.columns)
             self.assertTrue(r[r.stage == "conformal_alpha0.1"].mean_set_size.between(0, 2).all())
+
+
+class TestForceReplacesNotDuplicates(unittest.TestCase):
+    def test_force_rerun_replaces_rows_and_keeps_other_runs(self):
+        t, F = planted_table(n_drugs=70, n_events=15, seed=7)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            save_event_table(t, d / "table", {})
+            splits_main(["--table", str(d / "table"), "--out", str(d / "splits"), "--seeds", "0", "--kinds", "cold_drug", "--min-pairs-full", "300"])
+            (d / "out").mkdir()
+            np.savez_compressed(d / "out" / "ecfp6_r3_1024.npz", bits=F[t.drugs.drug_idx.to_numpy()], valid=np.ones(len(t.drugs), bool),
+                                smiles_sha256=np.array(smiles_list_hash(t.drugs["smiles"].tolist())))
+            base = ["--table", str(d / "table"), "--splits", str(d / "splits"), "--out", str(d / "out"), "--names", "cold_drug_seed0",
+                    "--epochs", "6", "--min-pos", "3"]
+            run_main(base + ["--models", "prior", "logreg"])
+            n0 = len(pd.read_csv(d / "out" / "results.csv"))
+            self.assertEqual(list(d.glob("out/scores_*")), [])
+            run_main(base + ["--models", "logreg", "--save-scores", "--force"])          # same run again, now saving scores
+            r = pd.read_csv(d / "out" / "results.csv")
+            self.assertEqual(len(r), n0)                                                     # replaced, not duplicated
+            self.assertEqual(int((r.model == "prior").sum()), int((r.model == "prior").sum()))
+            self.assertTrue(any((d / "out").glob("scores_cold_drug_seed0_logreg_symmetric_val.npz")))   # validation scores now exist
+            run_main(base + ["--models", "logreg"])                                         # no --force: skipped
+            self.assertEqual(len(pd.read_csv(d / "out" / "results.csv")), n0)
