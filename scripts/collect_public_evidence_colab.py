@@ -28,6 +28,7 @@ ENDPOINTS = {
     "openfda": "https://api.fda.gov/drug/label.json?search=openfda.generic_name:{name}&limit=100",
     "dailymed": "https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?drug_name={name}&pagesize=100",
 }
+STRUCTURE_COLUMNS = {"smiles", "inchi", "inchikey", "cid", "molecular_weight"}
 
 
 def sha256_file(path: Path) -> str:
@@ -60,12 +61,32 @@ def load_drug_names(path: str | Path, column: str | None = None) -> tuple[list[s
                 f"Could not find a drug-name column in {source}; "
                 f"observed columns: {reader.fieldnames}"
             )
+        if selected_column.casefold().strip() in STRUCTURE_COLUMNS:
+            raise ValueError(
+                f"Column {selected_column!r} contains chemical identifiers or structures, "
+                "not drug names. Use a catalog with a drug_name/name column."
+            )
         names = {
             str(row.get(selected_column, "")).strip()
             for row in reader
             if str(row.get(selected_column, "")).strip()
         }
+    if any(_looks_like_structure(value) for value in names):
+        raise ValueError(
+            f"Column {selected_column!r} contains structure-like values. "
+            "Use a drug-name catalog instead of SMILES/InChI/CID data."
+        )
     return sorted(names, key=lambda value: (value.casefold(), value)), selected_column
+
+
+def _looks_like_structure(value: str) -> bool:
+    """Reject common SMILES/InChI/CID values before sending them to name APIs."""
+    text = value.strip()
+    return (
+        text.startswith("InChI=")
+        or bool(re.fullmatch(r"(?:CID)?\d+", text, flags=re.IGNORECASE))
+        or any(token in text for token in ("[", "]", "#", "=", "(", ")", "."))
+    )
 
 
 def fetch_json(url: str, timeout: int) -> tuple[int, bytes]:

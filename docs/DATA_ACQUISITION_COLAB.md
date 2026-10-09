@@ -99,6 +99,12 @@ After verifying the existing sources, use the TWOSIDES drug catalog as the
 query list. This performs cached public API retrieval; it does not download
 TWOSIDES again and does not turn regulatory evidence into DDI labels.
 
+The query file must contain drug names or approved source identifiers. Do not
+use `PubChem/pubchem.csv` for this step: its columns are chemical structures
+and identifiers (`SMILES`, `InChIKey`, `CID`), not drug names. The collector
+now rejects structure columns and structure-like values rather than producing
+misleading cached responses.
+
 ```python
 !python /content/drive/MyDrive/AuditDDI/scripts/collect_public_evidence_colab.py \
   --data-root /content/drive/.shortcut-targets-by-id/1EK5SEg3iwEAEUBzwrCOsj_Y0huxGZklA/auditddi-data \
