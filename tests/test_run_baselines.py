@@ -109,3 +109,29 @@ class TestSelectiveAnalysisEndToEnd(unittest.TestCase):
             m = dep[(dep.reliability == "ad_mean") & (dep.target_coverage_on_val == 0.75)].set_index("partition").realised_coverage
             self.assertGreater(m["test_s2"], m["test_s1"])
             self.assertTrue((pd.read_csv(d / "out" / "abstention_gain.csv").ci_low <= pd.read_csv(d / "out" / "abstention_gain.csv").ci_high).all())
+
+
+class TestCalibrationRunnerEndToEnd(unittest.TestCase):
+    def test_calibration_improves_ece_and_reports_conformal(self):
+        from src.trust.run_calibration import main as cal_main
+
+        t, F = planted_table(n_drugs=130, n_events=20, seed=5)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            save_event_table(t, d / "table", {})
+            splits_main(["--table", str(d / "table"), "--out", str(d / "splits"), "--seeds", "0", "--kinds", "cold_drug",
+                         "--min-pairs-full", "500", "--frac-val", "0.2"])
+            (d / "out").mkdir()
+            np.savez_compressed(d / "out" / "ecfp6_r3_1024.npz", bits=F[t.drugs.drug_idx.to_numpy()], valid=np.ones(len(t.drugs), bool),
+                                smiles_sha256=np.array(smiles_list_hash(t.drugs["smiles"].tolist())))
+            run_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--out", str(d / "out"), "--names", "cold_drug_seed0",
+                      "--models", "logreg", "--epochs", "15", "--min-pos", "3", "--save-scores"])
+            cal_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--baselines", str(d / "out"),
+                      "--names", "cold_drug_seed0", "--models", "logreg", "--min-pos", "3", "--alphas", "0.1"])
+            r = pd.read_csv(d / "out" / "calibration_results.csv")
+            self.assertEqual(set(r.stage), {"raw", "platt", "conformal_alpha0.1"})
+            s2 = r[r.partition == "test_s2"].set_index("stage")
+            self.assertLess(s2.loc["platt", "macro_ece"], s2.loc["raw", "macro_ece"])          # weighted-BCE probabilities get fixed
+            self.assertAlmostEqual(s2.loc["platt", "macro_auroc"], s2.loc["raw", "macro_auroc"], delta=0.01)   # ranking untouched
+            self.assertIn("coverage_positive_macro", r.columns)
+            self.assertTrue(r[r.stage == "conformal_alpha0.1"].mean_set_size.between(0, 2).all())
