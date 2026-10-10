@@ -127,9 +127,10 @@ class TestCalibrationRunnerEndToEnd(unittest.TestCase):
             run_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--out", str(d / "out"), "--names", "cold_drug_seed0",
                       "--models", "logreg", "--epochs", "15", "--min-pos", "3", "--save-scores"])
             cal_main(["--table", str(d / "table"), "--splits", str(d / "splits"), "--baselines", str(d / "out"),
-                      "--names", "cold_drug_seed0", "--models", "logreg", "--min-pos", "3", "--alphas", "0.1"])
+                      "--names", "cold_drug_seed0", "--models", "logreg", "--min-pos", "3", "--alphas", "0.1", "--regime-aware"])
             r = pd.read_csv(d / "out" / "calibration_results.csv")
-            self.assertEqual(set(r.stage), {"raw", "platt", "conformal_alpha0.1"})
+            self.assertEqual(set(r.stage), {"raw", "platt", "conformal_alpha0.1", "platt_regime", "conformal_regime_alpha0.1"})
+            self.assertIn("median_cal_slope", r.columns)
             s2 = r[r.partition == "test_s2"].set_index("stage")
             self.assertLess(s2.loc["platt", "macro_ece"], s2.loc["raw", "macro_ece"])          # weighted-BCE probabilities get fixed
             self.assertAlmostEqual(s2.loc["platt", "macro_auroc"], s2.loc["raw", "macro_auroc"], delta=0.01)   # ranking untouched

@@ -30,6 +30,7 @@ from src.baselines.run_baselines import append_results
 from src.data_prep.build_event_table import labels_for, load_event_table
 from src.evaluation.multilabel_metrics import best_global_threshold, calibration_macro, evaluate
 from src.trust.calibration import EventCalibrator, conformal_report, conformal_sets, conformal_thresholds, split_calibration
+from src.trust.regime import RegimeAwareTrust, regime_of_pairs, seen_mask
 
 
 def _load(path: Path):
@@ -50,9 +51,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--lam", type=float, default=3.0)
     ap.add_argument("--min-pos", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--regime-aware", action="store_true",
+                    help="also fit calibrators/conformal thresholds separately for regimes 0/1/2 (number of drugs unseen in training)")
     a = ap.parse_args(list(argv) if argv is not None else None)
 
     table = load_event_table(a.table)
+    PA, PB = table.pairs["drug_a"].to_numpy(), table.pairs["drug_b"].to_numpy()
     tag = "" if a.feature_tag in ("", "ecfp") else "@" + a.feature_tag
     rows = []
     for name in a.names:
@@ -73,6 +77,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             thr_raw = best_global_threshold(Yv[cal], Sv[cal])
             thr_cal = best_global_threshold(Yv[cal], Pv[cal])
             qs = {al: conformal_thresholds(Pv[cal], Yv[cal], al) for al in a.alphas}
+            trust = None
+            if a.regime_aware:
+                seen = seen_mask(len(table.drugs), PA, PB, split["train"])
+                trust = RegimeAwareTrust(a.lam, alphas=a.alphas, seed=a.seed).fit(Sv, Yv, regime_of_pairs(seen, PA[rv], PB[rv]))
+                thr_reg = best_global_threshold(Yv, trust.transform(Sv, regime_of_pairs(seen, PA[rv], PB[rv])))
             ident = {"split": name, "model": model, "features": a.feature_tag or "ecfp", "n_fit": int(len(fit)), "n_cal": int(len(cal)),
                      "pooled_a": calib.a0_, "pooled_b": calib.b0_}
             for part in tests:
@@ -90,9 +99,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     in1, in0 = conformal_sets(P, q1, q0)
                     rows.append({**ident, "partition": part, "stage": f"conformal_alpha{al}", "alpha": al,
                                  **conformal_report(Y, in1, in0, a.min_pos, al)})
-                r = {x["stage"]: x for x in rows[-(2 + len(a.alphas)):]}
+                n_new = 2 + len(a.alphas)
+                if trust is not None:
+                    reg = regime_of_pairs(seen, PA[rt], PB[rt])
+                    Pr = trust.transform(S, reg)
+                    rows.append({**ident, "partition": part, "stage": "platt_regime", "regime_info": str(trust.info_),
+                                 **evaluate(Y, Pr, threshold=thr_reg, min_pos=a.min_pos)})
+                    for al in a.alphas:
+                        i1, i0 = trust.sets(Pr, reg, al)
+                        rows.append({**ident, "partition": part, "stage": f"conformal_regime_alpha{al}", "alpha": al,
+                                     **conformal_report(Y, i1, i0, a.min_pos, al)})
+                    n_new += 1 + len(a.alphas)
+                r = {x["stage"]: x for x in rows[-n_new:]}
+                if trust is not None:
+                    rr, cc = r["platt_regime"], r[f"conformal_regime_alpha{a.alphas[0]}"]
+                    print(f"{'':18s} {'':8s} {'  +regime':8s} ECE {rr['macro_ece']:.3f} | median slope {rr['median_cal_slope']:.2f} | "
+                          f"conformal(regime) pos-cov {cc['coverage_positive_macro']:.2f} set-size {cc['mean_set_size']:.2f}")
                 print(f"{name:18s} {model:8s} {part:8s} macro ECE {r['raw']['macro_ece']:.3f}->{r['platt']['macro_ece']:.3f} | "
-                      f"slope {r['raw']['macro_cal_slope']:.2f}->{r['platt']['macro_cal_slope']:.2f} | "
+                      f"median slope {r['raw']['median_cal_slope']:.2f}->{r['platt']['median_cal_slope']:.2f} | "
                       f"conformal(0.1) pos-cov {r[f'conformal_alpha{a.alphas[0]}']['coverage_positive_macro']:.2f} "
                       f"set-size {r[f'conformal_alpha{a.alphas[0]}']['mean_set_size']:.2f}")
     if rows:

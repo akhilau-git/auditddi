@@ -34,7 +34,7 @@ def load_runs(path: Path, model: str, stratified: Optional[bool] = True) -> pd.D
     df["features"] = df["features"].fillna("ecfp")
     if "stratified" not in df:
         df["stratified"] = False
-    df["stratified"] = df["stratified"].fillna(False).astype(bool)
+    df["stratified"] = df["stratified"].eq(True)
     df = df[df["model"] == model]
     if stratified is not None:
         df = df[df["stratified"] == stratified]

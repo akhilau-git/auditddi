@@ -66,7 +66,7 @@ def drop_matching(path: Path, split: str, model: str, mode: str, features: str, 
         return 0
     df = pd.read_csv(path)
     f = df["features"].fillna("ecfp") if "features" in df else pd.Series("ecfp", index=df.index)
-    st = df["stratified"].fillna(False).astype(bool) if "stratified" in df else pd.Series(False, index=df.index)
+    st = df["stratified"].eq(True) if "stratified" in df else pd.Series(False, index=df.index)
     m = (df["split"] == split) & (df["model"] == model) & (df["pair_mode"] == mode) & (f == features) & (st == stratified)
     if m.any():
         tmp = path.with_suffix(".csv.tmp")
@@ -132,7 +132,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if "stratified" not in prev:
             prev["stratified"] = False
         prev["features"] = prev["features"].fillna("ecfp")
-        prev["stratified"] = prev["stratified"].fillna(False).astype(bool)
+        prev["stratified"] = prev["stratified"].eq(True)
         done = set(zip(prev["split"], prev["model"], prev["pair_mode"], prev["features"], prev["stratified"]))
 
     for name in names:

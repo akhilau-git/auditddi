@@ -211,6 +211,11 @@ def calibration_macro(Y: np.ndarray, S: np.ndarray, min_pos: int = 5) -> Dict[st
     ev = np.where(evaluable_mask(Y, min_pos))[0]
     rows = [calibration_summary(Y[:, j].astype(np.float64), S[:, j].astype(np.float64)) for j in ev]
     out = {f"macro_{k}": float(np.mean([r[k] for r in rows])) for k in rows[0]} if rows else {}
+    if rows:
+        # the mean slope is dominated by outlier events when probabilities barely vary (low-signal data);
+        # the median is the robust summary and the one to quote
+        out["median_cal_slope"] = float(np.median([r["cal_slope"] for r in rows]))
+        out["median_cal_intercept"] = float(np.median([r["cal_intercept"] for r in rows]))
     out["n_events_evaluated"] = int(len(ev))
     micro = calibration_summary(Y.ravel().astype(np.float64), S.ravel().astype(np.float64))
     out.update({f"micro_{k}": v for k, v in micro.items()})
