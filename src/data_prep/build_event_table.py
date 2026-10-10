@@ -188,7 +188,7 @@ def build_event_table(
 # --------------------------------------------------------------------------- #
 def freeze_vocabulary(
     Y: sp.csr_matrix,
-    train_rows: Sequence[int],
+    train_rows: Sequence[int] | np.ndarray,
     events: pd.DataFrame,
     min_train_pairs: int,
     min_train_negatives: int = 1,
@@ -224,7 +224,7 @@ def pos_weights(vocab: pd.DataFrame, clip: Optional[float] = None) -> np.ndarray
     return w.astype(np.float32)
 
 
-def labels_for(Y: sp.csr_matrix, rows: Sequence[int], vocab: pd.DataFrame) -> np.ndarray:
+def labels_for(Y: sp.csr_matrix, rows: Sequence[int] | np.ndarray, vocab: pd.DataFrame) -> np.ndarray:
     """Dense [len(rows), n_heads] float32 label block for the frozen vocabulary."""
     cols = vocab["event_idx"].to_numpy(dtype=np.int64)
     return Y[np.asarray(rows, dtype=np.int64)][:, cols].toarray().astype(np.float32)

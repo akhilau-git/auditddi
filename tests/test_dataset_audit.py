@@ -37,7 +37,8 @@ class FakeSession:
             if not self.batch_ok:
                 return Resp(500)
             txt = ""
-            for a in params["accessions"].split(","):
+            accs = (params or {}).get("accessions", "")
+            for a in accs.split(","):
                 if a in self.FASTA:
                     txt += f">sp|{a}|{a}_HUMAN Protein {a} OS=Homo sapiens OX=9606 GN=G{a} PE=1 SV=1\n{self.FASTA[a]}\n"
             return Resp(200, txt)
