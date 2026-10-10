@@ -81,12 +81,13 @@ def build_targets(matched: pd.DataFrame, targets: pd.DataFrame, moa_only: bool =
 
 
 def union_targets(chembl: pd.DataFrame, dc: pd.DataFrame) -> pd.DataFrame:
-    a = chembl[["drug_idx", "uniprot", "organism"]].assign(source="chembl_mechanism")
-    b = dc[["drug_idx", "uniprot", "organism"]].assign(source="drugcentral")
+    a = chembl[["drug_idx", "uniprot", "organism"]].assign(source="chembl_mechanism", target_class=np.nan)
+    b = dc[["drug_idx", "uniprot", "organism", "target_class"]].assign(source="drugcentral")
     u = pd.concat([a, b], ignore_index=True)
-    # one row per (drug, target); if both sources have it, record both
+    # one row per (drug, target); if both sources have it, record both and keep the DrugCentral class
     u = u.groupby(["drug_idx", "uniprot"], as_index=False).agg(
-        organism=("organism", "first"), source=("source", lambda s: "+".join(sorted(set(s)))))
+        organism=("organism", "first"), target_class=("target_class", "first"),
+        source=("source", lambda s: "+".join(sorted(set(s)))))
     return u
 
 

@@ -38,6 +38,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--targets", required=True, type=Path)
     ap.add_argument("--pharmgkb", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--atc", type=Path, default=None, help="drug_atc.csv (drug_idx, atc_code) from src.features.rxnorm_by_name")
     ap.add_argument("--human-only-targets", action="store_true")
     ap.add_argument("--identity-canon", action="store_true", help="TESTING ONLY: skip RDKit canonicalisation")
     a = ap.parse_args(list(argv) if argv is not None else None)
@@ -49,7 +50,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     targets = pd.read_csv(a.targets)
     profiles = pd.read_csv(a.pharmgkb)
     canon = (lambda s: s) if a.identity_canon else rdkit_canonical
-    store = build_store(table.drugs, z["bits"], z["valid"], targets, profiles, canon_fn=canon, human_only_targets=a.human_only_targets)
+    atc = pd.read_csv(a.atc) if a.atc else None
+    store = build_store(table.drugs, z["bits"], z["valid"], targets, profiles, canon_fn=canon, human_only_targets=a.human_only_targets, atc=atc)
     rep = save_store(store, a.out, extra={"targets": {"path": str(a.targets), "sha256": _sha(a.targets)},
                                           "pharmgkb": {"path": str(a.pharmgkb), "sha256": _sha(a.pharmgkb)},
                                           "ecfp": {"path": str(a.ecfp), "sha256": _sha(a.ecfp)}})

@@ -98,7 +98,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--fingerprints", type=Path, default=None, help="ECFP6 cache (.npz); default <out>/ecfp6_r3_1024.npz")
     ap.add_argument("--feature-store", type=Path, default=None, help="drug_features.npz from src.features.drug_features")
-    ap.add_argument("--features", nargs="+", default=["ecfp"], choices=["ecfp", "target", "gene"],
+    ap.add_argument("--features", nargs="+", default=["ecfp"], choices=["ecfp", "target", "gene", "tclass", "atc"],
                     help="blocks to concatenate; with --feature-store, results are also stratified by biology availability")
     ap.add_argument("--force", action="store_true", help="retrain even if this run is already in results.csv; its old rows are replaced")
     ap.add_argument("--save-scores", action="store_true", help="store float16 test scores for paired tests later")
@@ -165,7 +165,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 for k in parts:
                     m = evaluate(Yparts[k].astype(np.int8), scores[k], threshold=thr, min_pos=a.min_pos)
                     row = {"split": name, "kind": info["kind"], "seed": info["seed"], "model": mname, "pair_mode": mode,
-                           "features": flabel, "stratified": stratified, "partition": k, "n_train": int(len(tr)), "n_heads": int(len(vocab)), "train_seconds": round(time.time() - t0, 1),
+                           "features": flabel, "scenario": "structure_only" if a.features == ["ecfp"] else "annotation_rich", "stratified": stratified, "partition": k, "n_train": int(len(tr)), "n_heads": int(len(vocab)), "train_seconds": round(time.time() - t0, 1),
                            "epochs_run": len(getattr(model, "history_", [])), "vocab_sha256": info["vocab"]["sha256"],
                            "split_digest": info["sha256_partition_digest"]}
                     if mode == "concat" and k != "val":

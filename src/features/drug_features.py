@@ -27,7 +27,8 @@ from typing import Callable, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-BLOCKS = ("ecfp", "target", "gene")
+BLOCKS = ("ecfp", "target", "gene", "tclass", "atc")
+ATC_RE = re.compile(r"^[A-Z]\d{2}([A-Z]([A-Z]\d{0,2})?)?$")
 
 
 def rdkit_canonical(smiles: str) -> Optional[str]:
@@ -79,6 +80,37 @@ def build_target_block(n_drugs: int, targets: pd.DataFrame, human_only: bool = F
     return _multi_hot(n_drugs, per)
 
 
+def build_class_block(n_drugs: int, targets: pd.DataFrame, col: str = "target_class"):
+    """Multi-hot over TARGET CLASSES (GPCR, kinase, ion channel ...).  Classes are shared by many
+    drugs, so unlike accession-level targets they carry information to drugs unseen in training."""
+    if col not in targets:
+        return np.zeros((n_drugs, 0), np.uint8), [], np.zeros(n_drugs, bool)
+    t = targets.dropna(subset=["drug_idx", col])
+    per: Dict[int, List[str]] = {}
+    for d, g in t.groupby("drug_idx"):
+        vals = sorted({str(v).strip() for v in g[col] if str(v).strip() and str(v).strip().lower() != "nan"})
+        if vals:
+            per[int(d)] = vals
+    return _multi_hot(n_drugs, per)
+
+
+def atc_levels(code: str) -> List[str]:
+    """ATC code -> level-1 (1 char), level-2 (3), level-3 (4) and level-4 (5) prefixes."""
+    c = str(code).strip().upper()
+    if not ATC_RE.match(c):
+        return []
+    return [c[:k] for k in (1, 3, 4, 5) if len(c) >= k]
+
+
+def build_atc_block(n_drugs: int, atc: pd.DataFrame, code_col: str = "atc_code"):
+    per: Dict[int, List[str]] = {}
+    for d, g in atc.dropna(subset=["drug_idx", code_col]).groupby("drug_idx"):
+        lv = sorted({x for c in g[code_col] for x in atc_levels(c)})
+        if lv:
+            per[int(d)] = lv
+    return _multi_hot(n_drugs, per)
+
+
 def build_gene_block(drugs: pd.DataFrame, profiles: pd.DataFrame, canon_fn: Callable[[str], Optional[str]] = rdkit_canonical,
                      smiles_col: str = "canonical_smiles", genes_col: str = "genes_list"):
     """Match PharmGKB profiles to drugs by canonical SMILES (exact, no fuzzy matching)."""
@@ -102,12 +134,24 @@ def smiles_hash(smiles: Sequence[str]) -> str:
 
 
 def build_store(drugs: pd.DataFrame, ecfp: np.ndarray, ecfp_valid: np.ndarray, targets: pd.DataFrame, profiles: pd.DataFrame,
-                canon_fn: Callable[[str], Optional[str]] = rdkit_canonical, human_only_targets: bool = False) -> dict:
+                canon_fn: Callable[[str], Optional[str]] = rdkit_canonical, human_only_targets: bool = False,
+                atc: Optional[pd.DataFrame] = None) -> dict:
     n = len(drugs)
     assert ecfp.shape[0] == n
     T, tvocab, has_t = build_target_block(n, targets, human_only_targets)
     G, gvocab, has_g, gmeta = build_gene_block(drugs, profiles, canon_fn)
+    store_extra = {}
+    if "target_class" in targets:
+        tc = targets
+        if human_only_targets and "organism" in tc:
+            tc = tc[tc["organism"] == "Homo sapiens"]
+        C, cvocab, has_c = build_class_block(n, tc)
+        store_extra.update({"tclass": C, "has_tclass": has_c, "tclass_vocab": np.array(cvocab, dtype=str)})
+    if atc is not None:
+        A, avocab, has_a = build_atc_block(n, atc)
+        store_extra.update({"atc": A, "has_atc": has_a, "atc_vocab": np.array(avocab, dtype=str)})
     return {
+        **store_extra,
         "ecfp": ecfp.astype(np.uint8), "ecfp_valid": ecfp_valid.astype(bool),
         "target": T, "has_target": has_t, "target_vocab": np.array(tvocab, dtype=str),
         "gene": G, "has_gene": has_g, "gene_vocab": np.array(gvocab, dtype=str),
@@ -127,7 +171,9 @@ def coverage_report(store: dict) -> dict:
         "has_neither": int((~(ht | hg)).sum()),
         "n_target_vocab": int(len(store["target_vocab"])), "n_gene_vocab": int(len(store["gene_vocab"])),
         "gene_match": json.loads(str(store["gene_match_meta"])),
-        "fraction_with_any_biology": round(float((ht | hg).mean()), 4),
+        "fraction_with_any_biology": round(float(biology_known(store).mean()), 4),
+        **({"has_target_class": int(store["has_tclass"].sum()), "n_target_classes": int(len(store["tclass_vocab"]))} if "has_tclass" in store else {}),
+        **({"has_atc": int(store["has_atc"].sum()), "n_atc_codes": int(len(store["atc_vocab"]))} if "has_atc" in store else {}),
     }
 
 
@@ -162,13 +208,21 @@ def feature_matrix(store: dict, features: Sequence[str]) -> np.ndarray:
             cols += [store["target"].astype(np.float32), store["has_target"][:, None].astype(np.float32)]
         elif f == "gene":
             cols += [store["gene"].astype(np.float32), store["has_gene"][:, None].astype(np.float32)]
+        elif f in ("tclass", "atc"):
+            if f not in store:
+                raise ValueError(f"feature block '{f}' is not in this store (rebuild it with the needed input)")
+            cols += [store[f].astype(np.float32), store["has_" + f][:, None].astype(np.float32)]
         else:
             raise ValueError(f"unknown feature block: {f}")
     return np.concatenate(cols, axis=1)
 
 
 def biology_known(store: dict) -> np.ndarray:
-    return store["has_target"] | store["has_gene"]
+    k = store["has_target"] | store["has_gene"]
+    for extra in ("has_tclass", "has_atc"):
+        if extra in store:
+            k = k | store[extra]
+    return k
 
 
 def stratum_of_pairs(known: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
