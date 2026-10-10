@@ -36,14 +36,14 @@ def regime_of_pairs(seen: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarra
 
 
 class RegimeAwareTrust:
-    def __init__(self, lam: float = 3.0, min_pairs: int = 200, alphas: Sequence[float] = (0.1,), seed: int = 0):
-        self.lam, self.min_pairs, self.alphas, self.seed = lam, min_pairs, tuple(alphas), seed
+    def __init__(self, lam: float = 3.0, min_pairs: int = 200, alphas: Sequence[float] = (0.1,), seed: int = 0, prior_mode: str = "pooled"):
+        self.lam, self.min_pairs, self.alphas, self.seed, self.prior_mode = lam, min_pairs, tuple(alphas), seed, prior_mode
 
     def fit(self, S: np.ndarray, Y: np.ndarray, regime: np.ndarray) -> "RegimeAwareTrust":
         regime = np.asarray(regime)
         # pooled fallback: all validation pairs, disjoint fit / conformal halves
         fit, cal = split_calibration(len(S), self.seed)
-        self.pooled_ = EventCalibrator(self.lam).fit(S[fit], Y[fit])
+        self.pooled_ = EventCalibrator(self.lam, prior_mode=self.prior_mode).fit(S[fit], Y[fit])
         Pc = self.pooled_.transform(S[cal])
         self.pooled_q_ = {al: conformal_thresholds(Pc, Y[cal], al)[:2] for al in self.alphas}
         self.cal_, self.q_, self.info_ = {}, {}, {}
@@ -53,7 +53,7 @@ class RegimeAwareTrust:
             if len(idx) < self.min_pairs:
                 continue
             f, c = split_calibration(len(idx), self.seed + 1 + r)
-            cal = EventCalibrator(self.lam).fit(S[idx[f]], Y[idx[f]])
+            cal = EventCalibrator(self.lam, prior_mode=self.prior_mode).fit(S[idx[f]], Y[idx[f]])
             Pr = cal.transform(S[idx[c]])
             self.cal_[r] = cal
             self.q_[r] = {al: conformal_thresholds(Pr, Y[idx[c]], al)[:2] for al in self.alphas}

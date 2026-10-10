@@ -51,6 +51,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--lam", type=float, default=3.0)
     ap.add_argument("--min-pos", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--prior-mode", choices=["pooled", "shared_slope"], default="pooled",
+                    help="shared_slope is recommended when validation pairs are scarce (e.g. S1)")
     ap.add_argument("--regime-aware", action="store_true",
                     help="also fit calibrators/conformal thresholds separately for regimes 0/1/2 (number of drugs unseen in training)")
     a = ap.parse_args(list(argv) if argv is not None else None)
@@ -72,7 +74,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             Sv, rv = _load(vf)
             Yv = labels_for(table.Y, rv, vocab).astype(np.int8)
             fit, cal = split_calibration(len(rv), a.seed)
-            calib = EventCalibrator(lam=a.lam).fit(Sv[fit], Yv[fit])
+            calib = EventCalibrator(lam=a.lam, prior_mode=a.prior_mode).fit(Sv[fit], Yv[fit])
             Pv = calib.transform(Sv)
             thr_raw = best_global_threshold(Yv[cal], Sv[cal])
             thr_cal = best_global_threshold(Yv[cal], Pv[cal])
@@ -80,10 +82,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             trust = None
             if a.regime_aware:
                 seen = seen_mask(len(table.drugs), PA, PB, split["train"])
-                trust = RegimeAwareTrust(a.lam, alphas=a.alphas, seed=a.seed).fit(Sv, Yv, regime_of_pairs(seen, PA[rv], PB[rv]))
+                trust = RegimeAwareTrust(a.lam, alphas=a.alphas, seed=a.seed, prior_mode=a.prior_mode).fit(Sv, Yv, regime_of_pairs(seen, PA[rv], PB[rv]))
                 thr_reg = best_global_threshold(Yv, trust.transform(Sv, regime_of_pairs(seen, PA[rv], PB[rv])))
             ident = {"split": name, "model": model, "features": a.feature_tag or "ecfp", "n_fit": int(len(fit)), "n_cal": int(len(cal)),
-                     "pooled_a": calib.a0_, "pooled_b": calib.b0_}
+                     "pooled_a": calib.a0_, "pooled_b": calib.b0_, "prior_mode": a.prior_mode}
             for part in tests:
                 f = a.baselines / f"{base}_{part}.npz"
                 if not f.exists():

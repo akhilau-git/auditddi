@@ -44,24 +44,25 @@ def sigmoid(z: np.ndarray) -> np.ndarray:
 # Platt scaling with shrinkage
 # --------------------------------------------------------------------------- #
 def fit_platt(x: np.ndarray, y: np.ndarray, prior: Tuple[float, float] = (0.0, 1.0), lam: float = 0.0,
-              iters: int = 100, min_slope: float = 1e-4) -> Tuple[float, float]:
+              iters: int = 100, min_slope: float = 1e-4, lam_a: Optional[float] = None) -> Tuple[float, float]:
     """Penalised logistic fit of y on x = logit(score).  Convex; damped Newton with
     backtracking.  Returns (a, b) with b >= min_slope."""
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     a0, b0 = prior
+    la = lam if lam_a is None else lam_a            # penalty on the intercept (slope penalty is `lam`)
 
     def obj(a, b):
         q = np.clip(sigmoid(a + b * x), EPS, 1 - EPS)
-        return -np.sum(y * np.log(q) + (1 - y) * np.log(1 - q)) + lam * ((a - a0) ** 2 + (b - b0) ** 2)
+        return -np.sum(y * np.log(q) + (1 - y) * np.log(1 - q)) + la * (a - a0) ** 2 + lam * (b - b0) ** 2
 
     a, b = a0, b0
     cur = obj(a, b)
     for _ in range(iters):
         q = sigmoid(a + b * x)
         w = np.maximum(q * (1 - q), 1e-9)
-        g = np.array([np.sum(q - y) + 2 * lam * (a - a0), np.sum((q - y) * x) + 2 * lam * (b - b0)])
-        H = np.array([[w.sum() + 2 * lam, (w * x).sum()], [(w * x).sum(), (w * x * x).sum() + 2 * lam]]) + 1e-9 * np.eye(2)
+        g = np.array([np.sum(q - y) + 2 * la * (a - a0), np.sum((q - y) * x) + 2 * lam * (b - b0)])
+        H = np.array([[w.sum() + 2 * la, (w * x).sum()], [(w * x).sum(), (w * x * x).sum() + 2 * lam]]) + 1e-9 * np.eye(2)
         step = np.linalg.solve(H, g)
         t = 1.0
         while t > 1e-8:
@@ -79,11 +80,48 @@ def fit_platt(x: np.ndarray, y: np.ndarray, prior: Tuple[float, float] = (0.0, 1
     return float(a), float(max(b, min_slope))
 
 
+def fit_shared_slope(X: np.ndarray, Y: np.ndarray, iters: int = 40, ridge: float = 1e-3):
+    """Shared within-event slope b* with a free intercept per event (fixed effects).
+
+        P(y_ie = 1) = sigmoid(a_e + b* * x_ie)
+
+    Because every event has its own intercept, differences in base rate BETWEEN events cannot
+    inflate the slope; b* reflects only how well the score ranks pairs within an event.
+    Events with no positives or no negatives carry no information and are ignored.
+    Returns (b*, a_e array)."""
+    X = np.asarray(X, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    pos = Y.sum(axis=0)
+    ok = (pos > 0) & (pos < len(Y))
+    a = np.full(X.shape[1], -3.0)
+    prev = np.clip(pos / max(len(Y), 1), 1e-4, 1 - 1e-4)
+    a = np.log(prev / (1 - prev))
+    b = 1.0
+    for _ in range(iters):
+        for _ in range(4):                                   # intercepts, vectorised Newton with step clipping
+            q = sigmoid(a[None, :] + b * X)
+            step = (q - Y).sum(axis=0) / ((q * (1 - q)).sum(axis=0) + 1e-6)
+            a = np.where(ok, a - np.clip(step, -2.0, 2.0), a)
+        q = sigmoid(a[None, :] + b * X)
+        g = ((q - Y)[:, ok] * X[:, ok]).sum()
+        h = (q * (1 - q) * X * X)[:, ok].sum() + ridge
+        b_new = max(b - np.clip(g / h, -1.0, 1.0), 1e-4)
+        if abs(b_new - b) < 1e-7:
+            b = b_new
+            break
+        b = b_new
+    return float(b), a
+
+
 class EventCalibrator:
     """Per-event Platt maps with shrinkage toward the pooled map."""
 
-    def __init__(self, lam: float = 3.0, min_pos_own_fit: int = 1):
-        self.lam, self.min_pos = lam, min_pos_own_fit
+    def __init__(self, lam: float = 3.0, min_pos_own_fit: int = 1, prior_mode: str = "pooled", lam_intercept: float = 0.01):
+        """prior_mode='pooled'       : shrink (a_e, b_e) toward one pooled (a0, b0) over all cells
+           prior_mode='shared_slope' : shrink only the SLOPE toward a within-event shared slope b*;
+                                       intercepts stay (almost) free.  Use when validation data are scarce."""
+        assert prior_mode in ("pooled", "shared_slope")
+        self.lam, self.min_pos, self.prior_mode, self.lam_a = lam, min_pos_own_fit, prior_mode, lam_intercept
 
     def fit(self, S: np.ndarray, Y: np.ndarray) -> "EventCalibrator":
         X = logit(S)
@@ -92,13 +130,18 @@ class EventCalibrator:
         rng = np.random.default_rng(0)
         flat = rng.choice(X.size, size=min(X.size, 2_000_000), replace=False)
         self.a0_, self.b0_ = fit_platt(X.ravel()[flat], Yf.ravel()[flat])
+        if self.prior_mode == "shared_slope":
+            self.b0_, self.a_fe_ = fit_shared_slope(X, Yf)
         E = S.shape[1]
         self.a_ = np.empty(E)
         self.b_ = np.empty(E)
         self.n_pos_fit_ = Yf.sum(axis=0).astype(int)
         for e in range(E):
             if self.n_pos_fit_[e] < self.min_pos or self.n_pos_fit_[e] == len(Yf):
-                self.a_[e], self.b_[e] = self.a0_, self.b0_
+                self.a_[e] = self.a_fe_[e] if self.prior_mode == "shared_slope" else self.a0_
+                self.b_[e] = self.b0_
+            elif self.prior_mode == "shared_slope":
+                self.a_[e], self.b_[e] = fit_platt(X[:, e], Yf[:, e], prior=(self.a_fe_[e], self.b0_), lam=self.lam, lam_a=self.lam_a)
             else:
                 self.a_[e], self.b_[e] = fit_platt(X[:, e], Yf[:, e], prior=(self.a0_, self.b0_), lam=self.lam)
         return self

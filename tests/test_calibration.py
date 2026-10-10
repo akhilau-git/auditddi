@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.evaluation.multilabel_metrics import auroc_per_event, calibration_macro  # noqa: E402
 from src.trust.calibration import (  # noqa: E402
     EventCalibrator,
+    fit_shared_slope,
     conformal_report,
     conformal_sets,
     conformal_thresholds,
@@ -143,6 +144,63 @@ class TestConformal(unittest.TestCase):
             q1, q0, _, _ = conformal_thresholds(P[cal], Y[cal], alpha)
             sizes.append(conformal_report(Y[test], *conformal_sets(P[test], q1, q0), min_pos=20, alpha=alpha)["mean_set_size"])
         self.assertGreater(sizes[1], sizes[0])
+
+
+def varied_rate_data(n, E, signal, seed, base_seed=11):
+    """Event base rates differ a lot BETWEEN events; the within-event signal is weak (signal) while the model claims 1.6."""
+    base = np.random.default_rng(base_seed).uniform(-4.0, -1.2, E)
+    rng = np.random.default_rng(seed)
+    L = rng.normal(size=(n, E))
+    Y = (rng.random((n, E)) < sigmoid(base + signal * L)).astype(np.int8)
+    S = sigmoid(base + 1.6 * L).astype(np.float32)
+    return Y, S
+
+
+class TestSharedSlopePrior(unittest.TestCase):
+    def test_recovers_within_event_slope_despite_between_event_variation(self):
+        Y, S = varied_rate_data(1500, 60, 0.15, 1)
+        b, a = fit_shared_slope(logit(S), Y)
+        self.assertAlmostEqual(b, 0.15 / 1.6, delta=0.03)             # true within-event slope
+        pooled = EventCalibrator(prior_mode="pooled").fit(S, Y)
+        self.assertGreater(pooled.b0_, 2 * b)                         # the pooled slope is inflated by between-event differences
+
+    def test_scarce_validation_data_pooled_undercorrects_shared_slope_does_not(self):
+        Yv, Sv = varied_rate_data(600, 300, 0.15, 1)
+        Yt, St = varied_rate_data(4000, 300, 0.15, 2)
+        fit, _ = split_calibration(600, 0)
+        slopes = {}
+        for mode in ("pooled", "shared_slope"):
+            cal = EventCalibrator(prior_mode=mode).fit(Sv[fit], Yv[fit])
+            slopes[mode] = calibration_macro(Yt, cal.transform(St), min_pos=10)["median_cal_slope"]
+        self.assertLess(slopes["pooled"], 0.7)
+        self.assertAlmostEqual(slopes["shared_slope"], 1.0, delta=0.3)
+
+    def test_no_loss_when_data_are_plentiful(self):
+        Yv, Sv = varied_rate_data(6000, 40, 1.6, 1)
+        Yt, St = varied_rate_data(4000, 40, 1.6, 2)
+        out = {}
+        for mode in ("pooled", "shared_slope"):
+            cal = EventCalibrator(prior_mode=mode).fit(Sv, Yv)
+            m = calibration_macro(Yt, cal.transform(St), min_pos=10)
+            out[mode] = (m["median_cal_slope"], m["macro_nll"])
+        self.assertAlmostEqual(out["pooled"][0], out["shared_slope"][0], delta=0.1)
+        self.assertLess(out["shared_slope"][1], out["pooled"][1] + 0.002)
+
+    def test_events_without_positives_or_negatives_do_not_break_it(self):
+        Y, S = varied_rate_data(400, 12, 0.5, 3)
+        Y[:, 0] = 0
+        Y[:, 1] = 1
+        cal = EventCalibrator(prior_mode="shared_slope").fit(S, Y)
+        self.assertTrue(np.isfinite(cal.a_).all() and np.isfinite(cal.b_).all() and (cal.b_ > 0).all())
+        self.assertTrue(np.isfinite(cal.transform(S)).all())
+
+    def test_regime_aware_accepts_prior_mode(self):
+        from src.trust.regime import RegimeAwareTrust
+
+        Y, S = varied_rate_data(1200, 30, 0.2, 4)
+        regime = np.r_[np.full(900, 1), np.full(300, 2)].astype(np.int8)
+        trust = RegimeAwareTrust(prior_mode="shared_slope", min_pairs=200).fit(S, Y, regime)
+        self.assertEqual(trust.transform(S, regime).shape, S.shape)
 
 
 if __name__ == "__main__":
