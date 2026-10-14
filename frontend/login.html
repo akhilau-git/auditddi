@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AuditDDI | Secure access</title>
+  <link rel="stylesheet" href="workspace.css">
+</head>
+<body class="login-page" data-api-base-url="/api">
+  <main class="login-shell">
+    <section class="brand-panel">
+      <span class="eyebrow">AUDITDDI PLATFORM</span>
+      <h1>Evidence-led drug interaction research.</h1>
+      <p>Choose your professional workspace after secure sign-in. Each workspace is designed for its actual decisions, evidence needs, and safety boundaries.</p>
+      <div class="role-map">
+        <span>Research &amp; Development</span><span>Clinical interaction review</span><span>Pharmacy safety review</span><span>Governance &amp; regulatory evidence</span><span>Portfolio screening</span>
+      </div>
+    </section>
+    <section class="login-card">
+      <span class="eyebrow">SECURE ACCESS</span>
+      <h2>Sign in to your workspace</h2>
+      <p id="login-status">Your account determines the workspace you can access.</p>
+      <form id="login-form">
+        <label>Email<input id="email" type="email" autocomplete="email" required></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Sign in</button>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+      <form id="bootstrap-form" hidden>
+        <p class="notice"><strong>First deployment setup:</strong> create the platform administrator. Set <code>AUDITDDI_AUTH_BOOTSTRAP_TOKEN</code> in the deployment environment, restart AuditDDI, then enter that one-time token here.</p>
+        <label>Administrator email<input id="bootstrap-email" type="email" autocomplete="email" required></label>
+        <label>Administrator password<input id="bootstrap-password" type="password" minlength="12" autocomplete="new-password" required></label>
+        <label>One-time bootstrap token<input id="bootstrap-token" type="password" autocomplete="off" required></label>
+        <button type="submit">Create administrator account</button>
+        <p id="bootstrap-error" class="form-error" role="alert"></p>
+      </form>
+      <p class="fine-print">This service provides research evidence and does not make patient-specific medication decisions.</p>
+    </section>
+  </main>
+  <script src="login.js"></script>
+</body>
+</html>

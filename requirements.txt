@@ -1,0 +1,12 @@
+torch
+torch-geometric
+pandas
+numpy
+scikit-learn
+scipy
+rdkit
+fastapi
+uvicorn
+pymupdf
+pydantic
+requests

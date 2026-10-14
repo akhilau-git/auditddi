@@ -1,0 +1,125 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Frontend (Node.js)
+node_modules/
+dist/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Run outputs and local checkpoint backups live in Drive/local storage, not Git.
+backend/artifacts/
+backend/plots/
+backend/auditddi-results/
+backend/pxddi-results/
+backend/checkpoints/*
+!backend/checkpoints/.gitkeep
+!backend/checkpoints/toxicity_smiles_bridge.csv
+!backend/checkpoints/cold_target_benchmark_summary.csv
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+backend/latest_results/
+
+# Run outputs, results, checkpoints, and experiment data live in Drive/local storage, not Git.
+results/*
+!results/final_5seed_master_results.csv
+backend/experiments/
+backend/new results 5-9-26/
+
+# Research data and licensed/source API material belong in Google Drive, not Git.
+/auditddi-data/
+/auditddi-results/
+**/DrugBank/raw/
+**/drugbank_api_cache/
+**/drugbank_responses/
+
+# Deliverable binaries (PowerPoint, etc.) — too large and binary for git.
+deliverables/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sqlite3
+*.db
+backend/state/*
+!backend/state/.gitkeep
+
+# Archive
+archive_unnecessary/
+AuditDDi_papers/
+*.docx
+guide*.txt
+guide1_extracted/
+lit*.txt
+auditddi_doc_text.txt
+mnt/
+CLAUDE.md

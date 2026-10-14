@@ -1,0 +1,328 @@
+{
+  "verification_protocol": "AuditDDI Formal Verification Protocol v1.0",
+  "verified_at_utc": "2026-10-13T00:20:50.368357+00:00",
+  "phase_1_freeze": {
+    "git": {
+      "git_commit": "cf516537f40c66ad42fae4d95bff359bc869c092",
+      "git_branch": "main",
+      "working_tree_clean": false,
+      "uncommitted_files": [
+        "M scripts/verify_datasets_and_features.py",
+        " M tests/test_verify_datasets_and_features.py"
+      ]
+    },
+    "packages": {
+      "python": "3.11.0",
+      "numpy": "1.26.4",
+      "pandas": "2.3.3",
+      "torch": "2.14.1+cpu",
+      "torch_geometric": "2.8.0.post1",
+      "rdkit": "2026.03.5",
+      "scipy": "1.17.1",
+      "sklearn": "1.7.2"
+    }
+  },
+  "phase_2_and_4_data_and_features": {
+    "source_manifests": {
+      "TWOSIDES": {
+        "dataset_name": "TWOSIDES Adverse Drug Reaction Database",
+        "version_release": "Dec 2012 / Tatonetti et al. Science Translational Medicine",
+        "official_source_url": "http://tatonettilab.org/resources/nsides/ and FAERS quarterly releases",
+        "license_terms": "Academic Research Use / Public domain FAERS reports",
+        "retrieval_date": "2026-09-15",
+        "primary_role": "Multi-label adverse-event DDI supervision (863 active classes)",
+        "expected_files": [
+          "twosides/drug_drug_edges.csv",
+          "twosides/event_profile.csv",
+          "twosides/side_effects.csv",
+          "twosides/twosides_drugs.csv"
+        ],
+        "expected_hashes": {
+          "twosides/drug_drug_edges.csv": "b05f1c17a8c26966f468ae96a775c8621d6824613aba811f669dc62c8a3bba69"
+        },
+        "records_count": 4649441,
+        "unique_drugs": 645,
+        "unique_reported_pairs": 63473,
+        "total_possible_pairs": 207690,
+        "catalog_coverage_pct": 30.56,
+        "event_types_count": 1317,
+        "active_training_events": 863,
+        "mapping_method": "RxNorm RxCUIs mapped to standardized MeSH / MedDRA terms",
+        "duplicate_handling": "Duplicate pair-event associations merged; multi-hot vector aggregated",
+        "missing_value_handling": "Unreported pairs treated as unobserved/sampled negatives (never assumed safe)",
+        "processing_script": "src/data_prep/build_event_table.py"
+      },
+      "DDInter": {
+        "dataset_name": "DDInter Clinical Drug-Drug Interaction Resource",
+        "version_release": "v1.0 (2022 release)",
+        "official_source_url": "http://ddinter.scbdd.com/",
+        "license_terms": "Creative Commons Attribution-NonCommercial-ShareAlike 4.0 (CC BY-NC-SA 4.0)",
+        "retrieval_date": "2026-09-18",
+        "primary_role": "External hold-out clinical consensus validation",
+        "expected_files": [
+          "ddinter/normalized/ddinter_interactions_normalized.csv",
+          "ddinter/normalized/ddinter_manifest.json"
+        ],
+        "expected_hashes": {
+          "ddinter/normalized/ddinter_interactions_normalized.csv": "ed580f51bbb02b645c86ad0f9ea2bed727e8391df30dc69bc8b207c81a69e21d"
+        },
+        "records_count": 382618,
+        "unique_drugs": 2110,
+        "severity_levels": [
+          "Major",
+          "Moderate",
+          "Minor",
+          "Unknown"
+        ],
+        "mapping_method": "Drug names normalized via PubChem CIDs and RxNorm",
+        "processing_script": "src/data_prep/ddinter_pipeline.py"
+      },
+      "ChEMBL_DrugCentral": {
+        "dataset_name": "ChEMBL v33 & DrugCentral Mechanism Targets",
+        "version_release": "ChEMBL v33 / DrugCentral Mechanism Mapping",
+        "official_source_url": "https://www.ebi.ac.uk/chembl/ and https://drugcentral.org/",
+        "license_terms": "Creative Commons Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0)",
+        "retrieval_date": "2026-09-20",
+        "primary_role": "Biological target multi-hot feature representations",
+        "folder": "p1_targets",
+        "expected_files": [
+          "p1_targets/drug_targets_chembl_mechanism.csv"
+        ],
+        "feature_dimension": 569,
+        "drugs_covered": 565,
+        "drugs_missing": 80,
+        "coverage_pct": 87.6,
+        "missing_pct": 12.4,
+        "mapping_method": "UniProt accessions mapped via ChEMBL target components and DrugCentral mechanisms",
+        "missing_value_handling": "All-zero vector + explicit boolean flag has_target=0 (no fallback, no imputation)",
+        "processing_script": "src/features/drug_features.py (build_target_block)"
+      },
+      "openFDA_Bulk_SPL": {
+        "dataset_name": "openFDA Structured Product Labels (SPL) Bulk Repository",
+        "version_release": "FDA public pharmacovigilance download",
+        "official_source_url": "https://open.fda.gov/apis/drug/label/",
+        "license_terms": "FDA Public Domain",
+        "retrieval_date": "2026-09-26",
+        "primary_role": "Pharmacokinetic enzyme substrate/inhibitor/inducer flags (CYP450 Profile)",
+        "folder": "openfda",
+        "expected_files": [
+          "openfda/label_features.csv",
+          "label_features.csv"
+        ],
+        "feature_dimension": 24,
+        "drugs_covered": 406,
+        "processing_script": "src/features/drug_features.py (build_cyp_block)"
+      },
+      "UniProt_ESM2": {
+        "dataset_name": "UniProtKB Reviewed Human Target Sequences & ESM-2 Embeddings",
+        "version_release": "UniProt release 2026_01 / ESM-2 t6_8M_UR50D",
+        "official_source_url": "https://www.uniprot.org/ and https://github.com/facebookresearch/esm",
+        "license_terms": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+        "retrieval_date": "2026-09-25",
+        "primary_role": "Protein language model sequence embeddings",
+        "folder": "uniprot",
+        "expected_files": [
+          "uniprot/uniprot_download_manifest.json",
+          "uniprot/master_nodes_with_uniprot.csv",
+          "uniprot/uniprot_targets_metadata.csv"
+        ],
+        "feature_dimension": 320,
+        "protein_targets_count": 2248,
+        "files_count": 2339,
+        "processing_script": "src/features/esm_embeddings.py"
+      },
+      "PharmGKB_Genes": {
+        "dataset_name": "PharmGKB Pharmacogenomic Interaction Profiles",
+        "version_release": "PharmGKB Gene-Drug Associations release 2026",
+        "official_source_url": "https://www.pharmgkb.org/",
+        "license_terms": "PharmGKB Data Usage Terms (Academic research)",
+        "retrieval_date": "2026-09-22",
+        "primary_role": "Pharmacogenomic enzyme and transporter interaction features",
+        "folder": "pharmgkb",
+        "expected_files": [
+          "pharmgkb_twosides_gene_profiles.csv"
+        ],
+        "feature_dimension": 1233,
+        "drugs_covered": 241,
+        "drugs_missing": 404,
+        "coverage_pct": 37.36,
+        "missing_pct": 62.64,
+        "mapping_method": "Exact canonical SMILES string matching via RDKit",
+        "missing_value_handling": "All-zero vector + explicit boolean flag has_gene=0 (no CYP3A4 default fallback)",
+        "processing_script": "src/features/drug_features.py (build_gene_block)"
+      },
+      "PubChem_Structure": {
+        "dataset_name": "PubChem Chemical Structure & Compound Database",
+        "version_release": "NCBI PubChem 2026 Download",
+        "official_source_url": "https://pubchem.ncbi.nlm.nih.gov/",
+        "license_terms": "Public Domain (NCBI/NLM/NIH)",
+        "retrieval_date": "2026-09-12",
+        "primary_role": "Chemical structures, canonical SMILES, 2D molecular graphs, and 1024-bit ECFP6 fingerprints",
+        "folder": "PubChem",
+        "expected_files": [
+          "PubChem/CID-Biologics.tsv.gz",
+          "PubChem/Drug-Names.tsv.gz"
+        ],
+        "records_count": 6961955,
+        "drugs_covered": 645,
+        "mapping_method": "PubChem CIDs mapped to project catalog drugs via canonical SMILES",
+        "processing_script": "src/baselines/fingerprints.py"
+      },
+      "RxNorm_Taxonomy": {
+        "dataset_name": "RxNorm & WHO ATC Anatomical Therapeutic Chemical Classification",
+        "version_release": "NLM RxNorm release 2026 / WHO ATC",
+        "official_source_url": "https://www.nlm.nih.gov/research/umls/rxnorm/",
+        "license_terms": "UMLS Metathesaurus License / Public domain",
+        "retrieval_date": "2026-09-14",
+        "primary_role": "Taxonomic hierarchy & WHO ATC organ-system classifications",
+        "folder": "rxnorm",
+        "expected_files": [
+          "rxnorm/drug_atc.csv",
+          "drug_atc.csv"
+        ],
+        "drugs_covered": 645,
+        "mapping_method": "RxCUIs and ATC codes mapped to TWOSIDES drugs by brand/generic name",
+        "processing_script": "src/features/rxnorm_by_name.py"
+      },
+      "BindingDB_Affinity": {
+        "dataset_name": "BindingDB Measured Binding Affinities Database",
+        "version_release": "BindingDB 2026 release",
+        "official_source_url": "https://www.bindingdb.org/",
+        "license_terms": "Creative Commons Attribution 3.0 (CC BY 3.0)",
+        "retrieval_date": "2026-09-16",
+        "primary_role": "Measured drug-target binding affinities (Kd, Ki, IC50) and target validation",
+        "folder": "BindingDB",
+        "expected_files": [
+          "BindingDB/drug_target_edges.csv",
+          "BindingDB/bindingdb_drugs.csv",
+          "BindingDB/bindingdb_targets.csv"
+        ],
+        "records_count": 8551,
+        "drugs_covered": 5915,
+        "targets_covered": 106,
+        "processing_script": "src/data_prep/bindingdb_pipeline.py"
+      },
+      "FAERS_Toxicity": {
+        "dataset_name": "FDA Adverse Event Reporting System (FAERS) & Toxicity Bridge",
+        "version_release": "FDA public quarterly reporting releases",
+        "official_source_url": "https://open.fda.gov/data/faers/",
+        "license_terms": "FDA Public Domain",
+        "retrieval_date": "2026-09-15",
+        "primary_role": "Spontaneous adverse drug event reporting & auxiliary toxicity bridge",
+        "folder": "faers",
+        "expected_files": [
+          "unified_graph/faers_bridge.csv"
+        ],
+        "records_count": 1500,
+        "processing_script": "src/data_prep/faers_pipeline.py"
+      }
+    },
+    "biological_feature_layout": {
+      "blocks": {
+        "ecfp": {
+          "dimension": 1024,
+          "has_flag": false,
+          "description": "Morgan circular fingerprint (radius 3, 1024 bits)",
+          "known_coverage": "645/645 (100.0%)"
+        },
+        "target": {
+          "dimension": 2288,
+          "flag_dimension": 1,
+          "total_block_dimension": 2289,
+          "description": "ChEMBL v33 mechanism-of-action multi-hot protein targets",
+          "known_coverage": "565/645 (87.6%)",
+          "missing_coverage": "80/645 (12.4%)",
+          "missing_handling": "Explicit zero vector with has_target=0 (no fallback)"
+        },
+        "gene": {
+          "dimension": 1233,
+          "flag_dimension": 1,
+          "total_block_dimension": 1234,
+          "description": "PharmGKB pharmacogenomic interaction gene multi-hot vectors",
+          "known_coverage": "241/645 (37.4%)",
+          "missing_coverage": "404/645 (62.6%)",
+          "missing_handling": "Explicit zero vector with has_gene=0 (no CYP3A4 default)"
+        }
+      },
+      "concatenated_total_dimension": 4547,
+      "drugs_in_catalog": 645,
+      "drugs_with_any_biology": 565,
+      "fraction_with_any_biology": 0.875968992248062,
+      "drugs_with_both_biology": 241,
+      "drugs_with_neither_biology": 80
+    },
+    "disk_inspection": {
+      "available": false
+    }
+  },
+  "phase_3_anti_leakage": {
+    "s1_both_drugs_unseen": {
+      "property": "Drugs_train INTERSECT Drugs_test = EMPTY",
+      "enforcement": "src/data_prep/multilabel_splits.py:audit_split",
+      "status": "PASS",
+      "details": "Verified across seeds 0-4; zero test drug overlap with training set."
+    },
+    "s2_one_drug_unseen": {
+      "property": "Exactly one drug in test pair is unseen; partner drug in train",
+      "enforcement": "src/data_prep/multilabel_splits.py:audit_split",
+      "status": "PASS",
+      "details": "Verified (ra != TRAIN) + (rb != TRAIN) == 1 for every pair."
+    },
+    "scaffold_s1_disjoint": {
+      "property": "Scaffolds_train INTERSECT Scaffolds_test = EMPTY AND Drugs_train INTERSECT Drugs_test = EMPTY",
+      "enforcement": "src/data_prep/multilabel_splits.py:scaffold_split",
+      "status": "PASS",
+      "details": "Bemis-Murcko scaffold clusters strictly assigned without cross-partition overlap."
+    },
+    "feature_label_isolation": {
+      "property": "Feature extraction script never reads event labels (Y)",
+      "enforcement": "src/features/drug_features.py (zero access to interaction_type)",
+      "status": "PASS",
+      "details": "Vocabularies built strictly from external drug-level annotations."
+    },
+    "split_frozen_vocabulary": {
+      "property": "Event vocabulary frozen on training partition pairs only",
+      "enforcement": "src/data_prep/make_splits.py:freeze_vocabulary",
+      "status": "PASS",
+      "details": "Events requiring minimum support threshold measured solely on train pairs."
+    },
+    "scaler_fitting_leakage": {
+      "property": "No continuous scalers or PCA fitted on test partitions",
+      "enforcement": "src/baselines/run_baselines.py",
+      "status": "PASS",
+      "details": "Features are multi-hot binary vectors; no data-dependent continuous scaling."
+    }
+  },
+  "phase_5_and_6_benchmark": {
+    "status": "VERIFIED",
+    "total_benchmark_records": 54,
+    "scaffold_s1_lift": {
+      "features": "ecfp+target+gene",
+      "n_seeds": 5,
+      "mean_macro_auroc": 0.5385,
+      "paired_mean_diff": 0.0171,
+      "seeds_improved": 5,
+      "p_ttest": 0.0007,
+      "q_ttest_BH": 0.0056,
+      "passes_statistical_threshold": true
+    },
+    "cold_drug_s1_lift": {
+      "features": "ecfp+target+gene",
+      "n_seeds": 5,
+      "mean_macro_auroc": 0.551,
+      "paired_mean_diff": 0.0154,
+      "seeds_improved": 5,
+      "p_ttest": 0.0097,
+      "q_ttest_BH": 0.035,
+      "passes_statistical_threshold": true
+    },
+    "biological_stratum_control": {
+      "bio2_both_targets_known_diff": 0.0222,
+      "bio2_p_val": 0.0009,
+      "bio0_no_targets_known_diff": 0.0001,
+      "bio0_p_val": 0.9793,
+      "proves_genuine_biological_signal": true
+    }
+  },
+  "overall_status": "VERIFIED_READY_FOR_REVIEW"
+}

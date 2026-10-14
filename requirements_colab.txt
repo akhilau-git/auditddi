@@ -1,0 +1,24 @@
+# Google Colab dependencies for AuditDDI training.
+#
+# PyTorch is intentionally excluded so Colab retains its GPU-optimised build.
+# Colab updates its Python version over time, so these are compatibility bounds
+# rather than obsolete exact pins. Every run records the resolved versions in
+# artifacts/run_<timestamp>/run_manifest.json.
+
+# Colab currently uses Python 3.13.  PyG 2.8.0.post1 supports current Colab
+# Python and PyTorch builds; install it in a fresh runtime after upgrading.
+torch-geometric==2.8.0.post1
+pandas>=2.2.3,<3
+numpy>=1.26.4,<3
+scikit-learn>=1.4.2,<2
+scipy>=1.11,<2
+rdkit>=2024.3.5
+matplotlib>=3.8,<4
+# Required only for the explicit ESM-2 cold-target candidate.  The benchmark
+# records whether ESM-2 or the learned residue-CNN was used and can be set to
+# fail rather than silently falling back when ESM-2 is requested.
+# Current Colab images ship Diffusers/Gradio on Hugging Face Hub 1.x.  The
+# legacy Transformers 4.x line downgrades that shared dependency and leaves
+# pip with an inconsistent environment; ESM remains available in Transformers
+# 5.x.
+transformers>=5.0,<6
