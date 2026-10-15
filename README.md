@@ -1,472 +1,257 @@
-# AuditDDI: An Auditable Framework for Drug-Drug Interaction Prediction under Cold-Start Evaluation
+# AuditDDI
 
-AuditDDI is an auditable, structure-based deep learning framework for drug-drug interaction (DDI)
-prediction specifically engineered for cold-start generalization (novel, unseen drugs).
-It unifies:
-1. Dual-stream molecular representation: Edge-aware GATv2 encoding 2D chemical topology fused with 1024-bit Morgan fingerprints.
-2. Auditable Neighbor Interaction Memory (RAG-DDI): Retrieves nearest structural analogs from training memory to anchor inductive S1/S2 predictions with transparent, verifiable evidence.
-3. Rigorous cold-start auditing: 4-category pair applicability domain, Tanimoto degradation curves with bootstrap 95% CIs, and calibrated conformal prediction sets.
-It is a research framework and **not for unverified clinical use**.
+AuditDDI is a research project for predicting **reported drug–drug interaction (DDI) associations** from molecular structure and linked drug evidence. Training and evaluation run in Google Colab; a reviewed model checkpoint can then be served locally through a FastAPI backend and web frontend.
 
-## Committed reference GNN artifact
+> **Research prototype:** a model score is not medical advice or a clinical probability. The training labels distinguish reported TWOSIDES pairs from sampled pairs that were not reported in the supplied data. An unreported pair is unknown; it is not known to be safe.
 
-The checkpoint at `backend/checkpoints/auditddi_model.pt` currently reports:
+## Project at a glance
 
-- Best validation epoch: 195
-- Stored validation AUROC: 0.8972
-- Validation-selected decision threshold: 0.4404
-- Training cap: 200,000 rows
-
-These are metadata for the committed reference artifact, not external or
-clinical validation. A locally replaced or newly trained checkpoint must be
-described by its own Colab `run_manifest.json`, not by copying these figures.
-The API also marks its risk estimate as uncalibrated.
-
-The reference checkpoint predates the explicit auxiliary-toxicity logits-loss
-record now required by the training pipeline. It remains loadable as a
-research-only DDI reference, but it must not be used to make an
-auxiliary-toxicity performance claim. Every multi-task candidate must be
-retrained with the current code before comparison.
-
-## Archived Colab screening result
-
-A local archive contains one completed Colab GPU screening run for `edge_aware_multitask` (seed 11, split seed 42). It reports test AUROC 0.9161 transductive (n=18,120; stratified bootstrap 95% CI 0.9124–0.9201), 0.6698 S2 (n=15,086; 0.6615–0.6778), and 0.5003 S1 (n=620; 0.4571–0.5480). This is one seed; intervals reflect test-row resampling, not seed-to-seed uncertainty. The S1 result is near chance.
-
-Observed conformal coverage for a nominal 90% rule was 91.6% transductive, 72.3% S2, and 62.6% S1. The current rule therefore misses its nominal coverage under cold-start shift. This is not evidence of cold-start reliability. See `research_paper/results.md` for calibration metrics and caveats. Labels are reported TWOSIDES interactions versus sampled unreported pairs, not harmful versus safe outcomes.
-
-## Local setup
-
-Use CPython 3.10.11. Install development dependencies and run tests:
-
-```powershell
-C:\Python310\python.exe -m pip install -r requirements-dev.txt
-C:\Python310\python.exe -m pytest -q  # `pytest -q` works as well
+```text
+Seven source folders in Google Drive
+        ↓
+Drug identity resolution and source audits
+        ↓
+Molecular and drug-profile feature preparation
+        ↓
+ChEMBL encoder pretraining → TWOSIDES-supervised DDI training
+        ↓
+Transductive, S1, and S2 evaluation + run artifacts
+        ↓
+Review a checkpoint → local FastAPI service + web app
 ```
 
-The development test client uses the official `httpx` package. Do not install
-the unrelated `httpx2` package for this repository.
+The repository contains source code, preparation scripts, the model, evaluation tools, a local application, and tests. Raw datasets, generated artifacts, and model checkpoints are kept outside Git—normally in Google Drive or local deployment storage.
 
-Start the research API:
+## The seven datasets and their roles
 
-```powershell
-C:\Python310\python.exe -m uvicorn backend.main:app --reload
+The project uses these seven sources. They have different jobs; their records are **not concatenated into one training-label table**.
+
+| Source | Role in AuditDDI |
+|---|---|
+| **TWOSIDES** | Main supervised pair labels: reported drug pairs are positive examples. |
+| **PubChem** | Drug identity and chemical structure resolution; canonical SMILES are used to build molecular inputs. |
+| **ChEMBL** | Chemical structures for leakage-audited, self-supervised molecular encoder pretraining. |
+| **DDInter** | Curated interaction evidence; known pairs are excluded from sampled negatives and retained for audit. Unlisted pairs remain unknown. |
+| **PharmGKB** | Matched drug–gene evidence used in the drug-profile feature bundle. |
+| **openFDA** | Matched label-derived CYP profile features in the source bundle. |
+| **FAERS** | Pharmacovigilance coverage and reporting-bias audit. FAERS report counts are not model input features in the current workflow. |
+
+The current multimodal candidate uses a shared edge-aware GATv2 molecular encoder, Morgan fingerprints, and a 51-dimensional audited drug profile. The ChEMBL-pretrained encoder initializes the molecular encoder. TWOSIDES remains the source of the model's supervised DDI labels; the other sources contribute structures, features, pretraining, or separate evidence/audits according to the table above.
+
+## Repository layout
+
+```text
+backend/                 FastAPI service and local authentication
+frontend/                Browser application served by Nginx
+scripts/                 Dataset checks and preparation commands
+src/data_prep/           Drug resolution, graph preparation, source linking
+src/models/              Molecular encoders, pair model, calibration and audits
+src/training/            ChEMBL pretraining, DDI training, evaluation and studies
+tests/                   Automated project tests
+docs/                    Dataset, methodology, and workflow notes
+requirements.txt         Local/API Python dependencies
+requirements_colab.txt   Colab dependencies; leaves Colab's PyTorch build in place
+docker-compose.yml       Local two-service deployment
 ```
 
-Useful endpoints:
-
-- `GET /health` — process liveness and model metadata.
-- `GET /ready` — deployment readiness; fails if required toxicity coverage
-  data is unavailable.
-- `POST /predict` — research-only pair prediction.
-- `POST /explain` — slower embedding-level explanation.
-
-The default frontend origin is `http://localhost:3000`. Set
-`AUDITDDI_ALLOWED_ORIGINS` to a comma-separated allowlist for another deployment.
-`AUDITDDI_TRUSTED_HOSTS` must similarly contain the bare API host names (for
-example, `api.example.org`), never a URL or wildcard. `/health` now labels a
-checkpoint's stored AUROC as internal model-selection metadata rather than test
-or clinical evidence. `/predict` explicitly reports when its checkpoint lacks
-saved calibration, conformal-uncertainty, or structural-domain state.
-
-Interactive API documentation remains enabled for direct local development. In
-Docker Compose it is disabled by default; set `AUDITDDI_ENABLE_DOCS=true` only for
-a trusted development environment. `X-Request-ID` is accepted and returned so
-the frontend can correlate a request with the backend's non-sensitive runtime
-log entry.
-
-The API rejects unknown request fields, type coercion, and all patient-context
-fields: it has no patient-linked training data and must not silently ignore
-such inputs. It accepts at most 16 KiB of request body by default, returns a
-non-sensitive validation response, adds `X-Request-ID` to responses, and
-prevents browsers or intermediaries from caching prediction output. Set
-`AUDITDDI_MAX_REQUEST_BYTES` or `AUDITDDI_MAX_CONCURRENT_PREDICTIONS` only after
-measuring the intended runtime; these local per-process guards do not replace
-gateway limits.
-
-For a non-local deployment, set `AUDITDDI_DEPLOYMENT_MODE=production`. Startup
-then requires HTTPS origins, public trusted hosts, disabled API documentation,
-a 32+-character `AUDITDDI_API_KEY`, and a positive
-`AUDITDDI_RATE_LIMIT_PER_MINUTE`. `POST /predict` and `POST /explain` require the
-key in `X-API-Key`; keep it in a trusted gateway or service, never browser
-JavaScript. The built-in limit is per process only. TLS termination,
-centralized authentication, shared rate limiting, durable audit logs, and
-monitoring still require deployment infrastructure.
-
-Use `.env.production.example` only as a checklist with
-`docker compose --env-file .env.production up`; keep the actual API key in a
-secret manager or protected deployment environment. TLS certificates and the
-HTTPS reverse proxy/API gateway remain hosting-specific and are deliberately
-not created by the repository.
-
-For local Docker Compose use, the backend is deliberately bound to
-`127.0.0.1:8000`, runs non-root with a read-only filesystem, and mounts
-`backend/checkpoints/` read-only. A public deployment must put an authenticated
-TLS reverse proxy or API gateway in front of it, set concrete CORS/host
-allowlists, and provide central rate limiting, audit logs, monitoring, and
-deployment-specific resource limits. These controls cannot be safely claimed
-from the repository alone.
-
-Docker Compose serves the frontend at `http://localhost:3000` and proxies its
-same-origin `/api/*` requests to the private backend service. The browser does
-not need direct access to port 8000. For a different deployment proxy, change
-the `data-api-base-url` value on the frontend `<body>` to that proxy's API
-prefix or full HTTPS API origin; do not hard-code a workstation hostname in
-browser code.
-
-Generated Colab outputs under `backend/plots/`, `backend/auditddi-results/`, and
-`backend/latest_results/` are excluded from the Docker build context. They are
-research evidence, not service inputs; only the explicitly mounted reviewed
-checkpoint directory is available to a running container.
-
-## Colab training
-
-### Collecting source datasets
-
-The implementation guide's source list and the fail-closed Colab acquisition
-procedure are documented in
-[docs/DATA_ACQUISITION_COLAB.md](docs/DATA_ACQUISITION_COLAB.md). The collector
-creates `auditddi-data/<source>/` folders inside the project checkout and
-writes a hashed `collection_manifest.json`. It requires explicit official or
-authorized URLs, keeps sources separate, and does not treat absent records as
-negative labels. Do not collect DrugBank or Medi-Span without written
-permission.
-
-For source folders already present in Drive, use
-`scripts/verify_existing_datasets.py` instead of downloading them again. It
-creates a read-only verification manifest with file sizes, SHA-256 digests,
-required-file checks, and explicit manual-review status.
-
-Training is intentionally run in Google Colab with a GPU. Install the
-Colab-compatible non-PyTorch packages from `requirements_colab.txt`, set
-`AUDITDDI_DATA_BASE` to the Drive data directory when needed, and run
-`src/training/train_full_pipeline_v2.py`. ChemBERTa remains disabled.
-
-`requirements_colab.txt` fixes `torch-geometric` at version 2.8.0.post1 for
-current Colab Python/PyTorch runtimes. If a Colab runtime previously imported a
-different PyG version or reports a circular-import error, restart the runtime
-after force-reinstalling PyG before starting training. The run manifest records
-the resolved package versions, so the installed environment remains
-auditable.
-
-Google Drive shortcuts may be read-only even when the source data inside them
-is accessible. In that case set `AUDITDDI_DATA_BASE` to the shared shortcut and
-`AUDITDDI_RESULTS_BASE` to a writable folder in your own `MyDrive`. Normal GNN
-and ECFP baseline runs will then read the TWOSIDES CSV and toxicity bridge from
-the shortcut while storing artifacts, latest results, and new candidate
-checkpoints under the writable results folder. The run manifest records both
-locations. This never alters the deployed backend checkpoint.
-
-Each run creates `artifacts/run_<timestamp>/` in Drive containing an initial
-and final manifest, resolved package/GPU environment, source revision, model
-summary, numeric training-history CSV, clean toxicity-label and input-quality
-audits, exact split CSVs and hashes, checkpoint hash, prediction CSVs, metrics
-JSON, and PNG/PDF figures. The pipeline excludes structures with conflicting
-toxicity scores rather than choosing a score by CSV row order or averaging
-them, and removes graph-incompatible SMILES before splitting.
-
-Before training, the original validation partition is deterministically split
-by class into a **model-selection validation** partition (used only for epoch
-selection/early stopping) and a **reserved post-hoc validation** partition.
-Only the reserved partition is later split into calibration, decision-threshold,
-and conformal roles. This prevents those post-hoc choices from reusing rows
-that selected the model. It also means older runs cannot be mixed into a new
-ensemble or used as directly comparable evidence.
-
-### Recommended final candidate configuration
-
-For the next single candidate run, use the default `edge_aware_gat_v2` model
-with split-aware, degree-matched unreported negatives and the auxiliary
-toxicity task disabled. The toxicity bridge has only 281 clean labelled
-structures, so it should be evaluated separately as an explicit multi-task
-ablation rather than folded into the decisive DDI candidate. These are now the
-pipeline defaults; setting them explicitly in Colab makes the run log easier
-to review:
+Get the source code from the project repository:
 
 ```bash
-export AUDITDDI_MODEL_ARCHITECTURE=edge_aware_gat_v2
-export AUDITDDI_NEGATIVE_SAMPLING_PROTOCOL=split_aware_standard_v1
-export AUDITDDI_NEGATIVE_SAMPLING_STRATEGY=degree_matched
-export AUDITDDI_USE_TOXICITY_PAIR_FEATURES=false
-export AUDITDDI_TOXICITY_LOSS_WEIGHT=0.0
-python src/training/train_full_pipeline_v2.py
+git clone https://github.com/akhilau-git/auditddi.git
+cd auditddi
 ```
 
-`auditddi_memory_fusion_v1` remains available only for a separately labelled
-comparison. Its training-row memory features now exclude the queried pair's
-own interaction-matrix entry, preventing the previously observed label leak.
-Every completed run writes `evaluation_metrics.csv` before its latest-results
-mirror is published. To re-evaluate a checkpoint, set one explicit
-`AUDITDDI_CHECKPOINT_PATH` and use `src/training/evaluate_saved_checkpoint.py`;
-it rejects checkpoints whose architecture, input hash, split evidence, or
-real training-history artifact cannot be verified. Checkpoint-only evaluation
-is read-only: it writes a new report folder but never changes the selected
-checkpoint or its hash.
+## Data and artifacts
 
-### Phase 7 evaluation protocol
+For the current Colab workflow, set the Drive project root to:
 
-Each normal run reports Transductive, S1 (both drugs unseen), and S2 (one drug
-unseen) results. Its `results_summary.json` now records:
+```text
+/content/drive/MyDrive/Projects/auditddi
+```
 
-- **Primary research metrics:** AUROC, average precision (PR-AUC), MCC, Brier
-  score and ECE. These answer ranking, class-imbalance, thresholded agreement,
-  and score-calibration questions.
-- **Secondary threshold metrics:** F1, precision, recall/sensitivity,
-  specificity, negative predictive value, false-positive rate, false-negative
-  rate, balanced accuracy, and ordinary accuracy. Ordinary accuracy is kept
-  only for comparison with prior papers; it is not a headline claim because
-  zero-labelled pairs are sampled *unreported* pairs, not known-safe pairs.
-- **Confidence intervals:** stratified 95% bootstrap intervals for AUROC,
-  average precision, F1, MCC, balanced accuracy, Brier score, and ECE. These
-  are within-test-split intervals, separate from the matched five-seed
-  intervals produced by the experiment suite.
-- **Audit outputs:** confidence-ranked false-positive and false-negative CSVs;
-  prediction metrics by three nearest-training-drug structural-similarity
-  bands; conformal abstention coverage and retained-subset metrics; total
-  training time, full-loader inference throughput, parameter count, and peak
-  CUDA memory when a GPU is present. Each run also writes a paper-ready
-  `evaluation_metrics.csv` (one row per split) and an entropy-ranked
-  risk–coverage diagnostic. The latter measures experimental-label error after
-  retaining the least-uncertain pairs first; it is not clinical risk.
+Expected source folders are `twosides/`, `pubchem/`, `chembl/`, `pharmgkb/`, `openfda/`, `faers/`, and `ddinter/`. Prepared inputs and generated artifacts live beside them:
 
-Calibration slope/intercept are explicitly labelled as **post-hoc diagnostic
-metrics**: they are calculated on the evaluation partition and are not used to
-re-fit or select the model. Do not describe them as clinical calibration.
+```text
+auditddi/
+├── twosides/ pubchem/ chembl/ pharmgkb/ openfda/ faers/ ddinter/
+├── processed/
+│   ├── twosides_v1/
+│   ├── auditddi_v1/
+│   └── auditddi_v2/
+├── checkpoints/
+└── results/
+```
 
-### Split-aware unreported-negative protocol
+The code checkout may be stored at `auditddi/code/` in Drive or elsewhere. Keep the code root and data root distinct in configuration: `AUDITDDI_DATA_BASE` points to the Drive project folder; commands are run from the repository root.
 
-The normal `split_aware_standard_v1` protocol chooses the seen, S1-dev, and
-S1-test drug identities from reported TWOSIDES pairs **before** sampling any
-zero-labelled pair. It then samples unreported pairs only within the correct
-Transductive, S1, or S2 identity partition. Every graph-compatible reported
-TWOSIDES pair is forbidden from the sampled-negative pool, including a pair
-omitted by a configured data cap. The exact group hashes, class counts,
-sampling attempts, label meaning, and protocol name are written to
-`audits/dataset_summary.json` for each run.
+## Colab workflow
 
-This makes new normal runs comparable across the GNN and ECFP baseline. It
-does **not** make an unreported pair safe, and historical pre-split-sampling
-artifacts must not be compared or combined with these runs.
+Use a GPU runtime when available. The trainer selects CUDA automatically and falls back to CPU when CUDA is unavailable; CPU runs can take substantially longer. Mount Drive before running these steps. Run commands from the repository root, such as `/content/auditddi` after cloning, while keeping the datasets under the Drive data root above.
 
-For a chemical-framework holdout, run a separate candidate training job with
-`AUDITDDI_EVALUATION_PROTOCOL=scaffold_disjoint`. It creates Murcko
-scaffold-disjoint train/validation/test partitions, excludes pairs spanning two
-different scaffold roles, and trains a distinct candidate checkpoint. It must
-not be mixed with the standard Transductive/S1/S2 result, because doing so
-would invalidate the scaffold-disjoint claim. The audit records the fallback
-used for acyclic molecules and all deliberately excluded cross-partition pairs.
+### 1. Install Colab dependencies
 
-For a paper comparison, use the `paper` experiment preset with five matched
-model seeds. It writes paired bootstrap effect-size intervals and a two-sided
-Wilcoxon signed-rank test only when five or more matched seeds exist; the
-resulting p-values receive Holm multiple-testing correction. Even then, they
-are internal benchmark evidence, not external or clinical proof.
+From the repository root:
 
-After a successful run, `latest_results/` in the Drive data folder is refreshed
-with the newest figures, manifests, summaries, training history, and audits.
-This gives one stable location for the current results; the timestamped run
-folders remain as reproducibility evidence and are not deleted automatically.
+```python
+%pip install -r requirements_colab.txt
+```
 
-### Candidate-model evaluation
+PyTorch is intentionally not installed by this file, preserving Colab's existing PyTorch/CUDA build. If a dependency install requires a runtime restart, restart first, remount Drive, and reapply environment variables.
 
-The deployed `backend/checkpoints/auditddi_model.pt` remains the audited legacy
-GAT checkpoint. New training defaults to an **edge-aware candidate** checkpoint
-at `checkpoints/candidates/auditddi_edge_aware_candidate.pt`; it does not replace
-the deployed model automatically. The candidate uses richer atom features and
-bond order, stereo, chirality, conjugation, aromaticity, and ring features.
+### 2. Verify the prepared data
 
-An additional untrained research candidate,
-`motif_edge_aware_gat_v1`, can be selected with
-`AUDITDDI_MODEL_ARCHITECTURE=motif_edge_aware_gat_v1`. It fuses the edge-aware
-graph embedding with 17 fixed SMARTS motif-count features, including carbonyl,
-amide, ester, aromatic-ring, amine, halogen, and other common chemical motifs.
-The motif vocabulary is explicit in `src/data_prep/molecular_motifs.py` and is
-recorded in each run manifest. These are experimental chemical-prior features,
-not proven DDI mechanisms or validated explanations.
-
-Another separate untrained candidate,
-`cross_attention_edge_aware_gat_v1`, can be selected with
-`AUDITDDI_MODEL_ARCHITECTURE=cross_attention_edge_aware_gat_v1`. After the
-edge-aware encoder produces atom embeddings, each atom in Drug A attends only
-to atoms in its paired Drug B, and vice versa. Attention is isolated within
-each DDI row—no molecule can attend to a different pair in the batch. Its
-shared two-way projections and final sum/absolute-difference pair head preserve
-the A–B/B–A symmetry guarantee. Attention values are not evidence of a chemical
-mechanism or validated explanations.
-
-### Candidate explanation audit (optional)
-
-For a **trained candidate only**, set
-`AUDITDDI_RUN_CANDIDATE_EXPLANATIONS=1` when launching
-`src/training/train_full_pipeline_v2.py`. The run then writes a small,
-deterministically selected evaluation subset to
-`artifacts/run_<timestamp>/explanations/candidate_occlusion_explanations.json`.
-For each example it records raw-score changes after masking one atom, bond
-feature, or (where applicable) SMARTS motif; top-atom fidelity/sufficiency
-checks; A–B versus B–A score symmetry; and canonical-SMILES re-encoding score
-stability. The cross-attention candidate additionally records its strongest
-pair-isolated atom-to-atom attention associations and configured SMARTS-motif
-A↔B association summaries. Matching SVG molecule figures are saved beside the
-JSON: orange means masking locally reduced the raw model score and blue means
-it increased it. These colours show model sensitivity only, not a toxicophore
-or causal mechanism.
-
-This is intentionally disabled by default, because masking each component is
-slower than ordinary inference. It is an offline research audit, not a backend
-endpoint, and its output must not be described as causal chemical evidence or
-clinical explanation. The latest-results mirror also copies the explanation
-and prediction files from a completed run for easy inspection.
-
-To evaluate repeated-seed explanation stability rather than selecting a
-visually preferred run, create matching candidate explanation artifacts for at
-least two seeds, then run
-`src/training/analyze_explanation_stability.py` with
-`AUDITDDI_EXPLANATION_ARTIFACTS` set to their comma-separated JSON paths. The
-report measures overlap of top atoms, motifs, and cross-drug motif associations
-only for pairs explained by every supplied run, together with raw-score
-variation. It reports agreement; it does not prove a causal explanation.
-
-### Uncertainty and structural-domain audit
-
-Every new run reserves post-hoc validation rows before training, then partitions
-those reserved predictions by class into three disjoint roles:
-Platt-calibration fitting, decision-threshold selection, and binary
-split-conformal fitting (default `AUDITDDI_CONFORMAL_ALPHA=0.1`). The exact roles,
-scores, and hashes are stored in the run artifact. Each saved test prediction
-states whether its conformal set is a single label, both labels, or an empty
-set; both-label and empty sets are marked `conformal_abstain=true`. The
-prediction CSV also records Bernoulli score entropy and a nearest-training-drug
-ECFP/Tanimoto structural-domain flag (default minimum similarity `0.4`).
-
-These are research guardrails, not clinical confidence. The conformal coverage
-assumption may fail under the S1/S2 distribution shifts, and molecular
-similarity does not measure novelty of a DDI pair or prove reliability. An OOD
-flag tells the reviewer to inspect or abstain; an unflagged result is still not
-validated or safe.
-
-### Fixed-split ensemble and safe abstention
-
-`src/training/run_fixed_split_ensemble.py` implements the Phase 6 research
-ensemble. It trains **three to five** same-architecture members with different
-model seeds but one fixed data/split seed, verifies their data and row-level
-prediction provenance, averages their raw scores, and then fits a fresh
-ensemble calibration, threshold, and conformal rule on disjoint validation
-roles. It never overwrites or serves `backend/checkpoints/auditddi_model.pt`.
-
-The ensemble prediction CSV stores every member score, its standard deviation,
-conformal set, structural-domain flag, and a transparent abstention status. A
-pair is marked `insufficient_evidence_for_reliable_unseen_drug_prediction`
-when the conformal set is ambiguous/empty, members disagree beyond the chosen
-research threshold, or either drug is outside the nearest-training-drug
-structural domain. This is a review/abstention rule—not a clinical guarantee.
-
-For a later Colab run, point `AUDITDDI_DATA_BASE` at the shared input-data folder
-and `AUDITDDI_RESULTS_BASE` / `AUDITDDI_ENSEMBLES_BASE` at writable folders in your
-own Drive, then run for example:
+The current workflow expects the audited TWOSIDES preparation and identity audits under `processed/`. Verify an existing Drive snapshot without downloading or modifying it:
 
 ```bash
-AUDITDDI_ENSEMBLE_ARCHITECTURE=cross_attention_edge_aware_gat_v1 \
-AUDITDDI_ENSEMBLE_SEEDS=11,23,37 \
-AUDITDDI_ENSEMBLE_SPLIT_SEED=42 \
-AUDITDDI_ENSEMBLE_EPOCHS=200 \
-python src/training/run_fixed_split_ensemble.py
+python scripts/verify_existing_datasets.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi
 ```
 
-Member candidates must be trained again through this command. Older runs used
-one seed for both data splitting and model initialization, so they are not
-valid fixed-split ensemble members.
+The finalized TWOSIDES pair table is `processed/twosides_v1/twosides_clean.parquet`, with its drug catalogue in `processed/twosides_v1/drugs_clean.csv`.
 
-Candidate training applies validation-AUROC early stopping after at least 40
-epochs, with a default patience of 30 non-improving epochs. Set
-`AUDITDDI_EARLY_STOPPING_PATIENCE=0` only when a deliberate fixed-length run is
-needed; the final manifest always records whether early stopping occurred.
+### 3. Build the seven-source feature bundle
 
-The backend continues to load the legacy checkpoint unless an operator
-explicitly selects a reviewed file through `AUDITDDI_CHECKPOINT_PATH`. A selected
-edge-aware candidate is given the compatible rich graph schema automatically;
-this is a loading compatibility feature, not an approval to deploy the
-candidate.
+```bash
+python scripts/prepare_auditddi_source_bundle.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi \
+  --parse-openfda
+```
 
-Run one candidate first, inspect its Transductive/S1/S2 metrics and calibration
-artifacts, then decide whether it should replace the legacy model. For a
-controlled baseline/ablation study, run
-`src/training/run_experiment_suite.py`. Its screening preset compares the
-ECFP/Morgan + linear-logistic baseline with four GNN ablations once. Its paper
-preset repeats the ECFP baseline and directly comparable legacy and edge-aware
-DDI-only GNNs across five seeds. Toxicity is evaluated separately as an
-ablation because the clean toxicity bridge has limited coverage. The suite
-verifies that each matched seed used the same
-TWOSIDES input and exact split hashes, and saves paired bootstrap confidence
-intervals. The ECFP baseline can be included in any deliberate run through
-`AUDITDDI_EXPERIMENT_NAMES=ecfp_sgd_logistic,...`. It uses symmetric
-`ECFP_a+ECFP_b` and `|ECFP_a-ECFP_b|` features, so reversing the drug order
-does not change its score. A screening result is directional evidence only; it
-is not statistical proof. Neither mode promotes a model automatically.
+This produces `processed/auditddi_v2/`, including the source-feature matrix and bundle manifest. The multimodal trainer checks that required prepared files and source evidence are present; inspect `source_bundle_manifest.json` before training.
 
-The ablation suite now also exposes `motif_edge_aware_ddi_only` and
-`motif_edge_aware_multitask`. Do not treat their presence as a result: keep the
-motif component only if repeated, matched-seed results improve S1/S2 over the
-edge-aware GATv2 reference without degrading calibration.
+### 4. Pretrain the molecular encoder on ChEMBL
 
-It also exposes `cross_attention_edge_aware_ddi_only` and
-`cross_attention_edge_aware_multitask`. Keep the cross-drug component only if
-it improves repeated matched-seed S1/S2 results over the same edge-aware GATv2
-reference, without an unacceptable calibration or efficiency regression.
+Set the paths so the encoder checkpoint and run artifacts persist in Drive:
 
-If `AUDITDDI_DATA_BASE` is a read-only Google Drive shortcut, keep it pointed at
-the shared data and set `AUDITDDI_EXPERIMENTS_BASE` to a writable folder in your
-own Drive before running the experiment suite. The suite then reads source data
-from the shortcut but writes study artifacts and candidate checkpoints to the
-writable location. `AUDITDDI_EXPERIMENTS_BASE` controls the complete study folder;
-its child runs already receive their individual writable artifact and checkpoint
-paths automatically.
+```python
+import os
+from pathlib import Path
 
-External validation is supported by `src/training/evaluate_external_dataset.py`
-only after you supply an independently sourced, documented dataset and its
-provenance metadata. It requires one explicit current-pipeline checkpoint and
-its original hashed development-split artifacts, then refuses an external
-dataset that contains any exact canonical pair used anywhere in internal
-development. It supports the
-edge-aware, motif, fingerprint, and neighbor-memory candidate inputs. The
-repository does not download, fabricate, or certify an external dataset; its
-source, labels, temporal independence, and remaining development-set overlap
-still require human scientific review.
+PROJECT = Path("/content/drive/MyDrive/Projects/auditddi")
+os.environ["AUDITDDI_DATA_BASE"] = str(PROJECT)
+os.environ["AUDITDDI_RESULTS_BASE"] = str(PROJECT / "results")
+os.environ["AUDITDDI_PRETRAIN_CHECKPOINT_PATH"] = str(
+    PROJECT / "checkpoints/chembl_pretrained_encoder.pt"
+)
+os.environ["AUDITDDI_PRETRAINED_ENCODER_PATH"] = str(
+    PROJECT / "checkpoints/chembl_pretrained_encoder.pt"
+)
+os.environ["AUDITDDI_MODEL_ARCHITECTURE"] = "auditddi_multimodal_v1"
+```
 
-When an independent dataset is ready, its CSV must contain `source`, `target`,
-and binary `label` columns and its metadata must complete
-`examples/external_evaluation_metadata.example.json`. Set
-`AUDITDDI_EXTERNAL_EDGES`, `AUDITDDI_EXTERNAL_METADATA`,
-`AUDITDDI_EXTERNAL_CHECKPOINT_PATH`, and (optionally)
-`AUDITDDI_EXTERNAL_ARTIFACTS_DIR`, then run
-`python src/training/evaluate_external_dataset.py`. A pre-current-pipeline
-checkpoint or a missing original artifact directory is intentionally rejected.
+Then run from the repository root:
 
-`notebooks/auditddi_training_run.ipynb` is intentionally empty in this local
-repository because the live work is done in Colab. After the next audited run,
-download and commit the executed notebook together with the configuration,
-data/split manifests, logs, metrics, plots, and checkpoint hash.
+```bash
+python -u src/training/pretrain_chembl_encoder.py
+```
 
-## Known limitations
+This is a separate self-supervised stage. It writes an encoder checkpoint and a pretraining manifest/history; it does **not** train the DDI classifier. If the audited ChEMBL checkpoint already exists and matches the current inputs, do not repeat pretraining unnecessarily.
 
-- S1 generalization to two unseen drugs is currently near random.
-- Random unreported TWOSIDES pairs are not confirmed-safe negatives.
-- The raw FAERS toxicity bridge covers 339 unique structures; 58 have
-  conflicting source scores. The next audited training run excludes those
-  conflicts, leaving 281 clean toxicity-label structures and a CSV audit file.
-- The deployed legacy checkpoint is uncalibrated. Candidate checkpoints may
-  include validation-fitted calibration, but that is not evidence of calibrated
-  cold-start, external, or clinical performance.
-- Patient-specific prediction and clinical rules are not implemented. No
-  independently sourced external dataset has yet been supplied and reviewed.
-  Production mode has local key/rate-limit gates, but a real gateway, TLS,
-  durable audit logging, and monitoring remain hosting responsibilities.
+### 5. Train and evaluate the multimodal DDI model
 
-See `MODEL_CARD.md` for full limitations and the current research scope.
-# First local sign-in
+Configure the run and keep the outputs in Drive:
 
-The Docker deployment uses real sign-in by default. Before its first start,
-set a long, random `AUDITDDI_AUTH_BOOTSTRAP_TOKEN` in a local `.env` file
-(which must not be committed). Open `/login.html`, use **Create administrator
-account**, and enter that token once. The administrator is then routed to
-`/admin.html` to create and assign role-specific accounts. There is no public
-role signup, because professional workspaces must be assigned by an
-organisation administrator.
+```python
+import os
+from pathlib import Path
+
+PROJECT = Path("/content/drive/MyDrive/Projects/auditddi")
+RESULTS = PROJECT / "results/seed_201"
+RESULTS.mkdir(parents=True, exist_ok=True)
+
+os.environ["AUDITDDI_DATA_BASE"] = str(PROJECT)
+os.environ["AUDITDDI_RESULTS_BASE"] = str(RESULTS)
+os.environ["AUDITDDI_MODEL_ARCHITECTURE"] = "auditddi_multimodal_v1"
+os.environ["AUDITDDI_MODEL_SEED"] = "201"
+os.environ["AUDITDDI_SPLIT_SEED"] = "42"
+os.environ["AUDITDDI_EPOCHS"] = "200"
+os.environ["AUDITDDI_PRETRAINED_ENCODER_PATH"] = str(
+    PROJECT / "checkpoints/chembl_pretrained_encoder.pt"
+)
+os.environ["AUDITDDI_PUBLISH_LATEST_RESULTS"] = "false"
+```
+
+Run:
+
+```bash
+python -u src/training/train_full_pipeline_v2.py
+```
+
+Training uses TWOSIDES pair labels, split-aware sampled unreported pairs, and a binary cross-entropy-with-logits objective. The trainer selects the best checkpoint on its model-selection validation split and applies early stopping. Each timestamped run writes manifests, split/input audits, training history, metrics, predictions, plots, and checkpoint metadata under the configured results location. Preserve that run folder with its checkpoint when reporting results.
+
+### 6. Understand and report the evaluation
+
+The pipeline reports three evaluation regimes:
+
+- **Transductive:** both drugs are represented in training.
+- **S1:** both drugs are unseen during training.
+- **S2:** one drug is unseen during training.
+
+Metrics include AUROC, PR-AUC/average precision, F1, MCC, balanced accuracy, and calibration-related measures. Use the run's final manifest and evaluation artifacts for reported numbers; a checkpoint's stored validation AUROC is a model-selection value, not a test result. A sampled unreported pair is not a confirmed-safe negative, and internal metrics are not clinical validation.
+
+For more detail on split construction, leakage controls, and artifacts, see [`docs/AUDITDDI_METHODOLOGY_AND_WORKFLOW.md`](docs/AUDITDDI_METHODOLOGY_AND_WORKFLOW.md).
+
+### Interrupted runs and warm starts
+
+Training checkpoints normally preserve the best model weights; they do not preserve the complete optimizer state needed for exact epoch-by-epoch continuation. The optional warm-start settings in `train_full_pipeline_v2.py` load a provenance-matched checkpoint and continue with newly initialized optimizer state:
+
+```text
+AUDITDDI_RESUME_CHECKPOINT_PATH=/path/to/saved_model.pt
+AUDITDDI_RESUME_AFTER_EPOCH=<last completed epoch shown in the log>
+AUDITDDI_CHECKPOINT_PATH=/path/to/a/new/output_checkpoint.pt
+```
+
+This is a warm start from saved weights, not an exact resume. Keep the input checkpoint and output checkpoint paths different, and use the same data, model configuration, and split seed. The trainer validates the saved input/split provenance before continuing.
+
+## Local deployment
+
+The local application loads a reviewed checkpoint; it does not train the model. Copy the selected checkpoint into `backend/checkpoints/` and name it `pxddi_model.pt`, or select another filename below that directory with `PXDDI_CHECKPOINT_PATH`. Keep the corresponding run manifest and evaluation artifacts for provenance. Do not deploy a checkpoint solely because its validation score is high.
+
+### Run with Docker Compose
+
+1. Place the reviewed checkpoint in `backend/checkpoints/pxddi_model.pt`.
+2. Create a local `.env` file with a private bootstrap token for the first administrator account:
+
+   ```dotenv
+   AUDITDDI_AUTH_BOOTSTRAP_TOKEN=replace-with-a-long-random-one-time-token
+   ```
+
+3. From the repository root, build and start the application:
+
+   ```bash
+   docker compose up --build
+   ```
+
+4. Open `http://localhost:3000/login.html`, create the initial administrator using the bootstrap token, and then use the admin page to create accounts and assign roles.
+
+Compose serves the frontend at `http://localhost:3000` and binds the backend API to `127.0.0.1:8000`. The frontend proxies its API requests to the backend. Check `http://localhost:8000/health` and `http://localhost:8000/ready` to inspect service status.
+
+Useful API routes include `POST /predict`, `POST /explain` when supported by the selected model, and `POST /audit/dossier`. Predictions are research estimates and explicitly retain the TWOSIDES label caveat.
+
+For local development without Docker, install `requirements.txt`, put the checkpoint in `backend/checkpoints/`, then start the API from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python -m uvicorn backend.main:app --reload
+```
+
+The backend expects its checkpoint inside `backend/checkpoints/`. See `.env.production.example` for the configuration requirements if adapting the service to a hosted environment. A public deployment also needs infrastructure-managed HTTPS, authentication, shared rate limiting, monitoring, and durable audit logging; the local Compose setup alone does not provide those services.
+
+## Development
+
+Install the development dependencies and run the test suite from the repository root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Do not commit raw datasets, credentials, local `.env` files, or trained checkpoints. Keep generated run outputs and model artifacts in the designated Drive/results or local checkpoint folders.
+
+## Limitations
+
+- TWOSIDES is observational pharmacovigilance evidence and may contain reporting bias.
+- An unreported pair is unknown, not proven safe.
+- S1/S2 cold-start performance can differ substantially from transductive performance.
+- Calibration, conformal sets, and structural-domain flags are research diagnostics; they do not guarantee reliability under distribution shift.
+- The project does not use patient-linked outcome data and is not a patient-specific clinical decision system.
