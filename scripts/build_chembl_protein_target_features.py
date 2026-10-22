@@ -87,7 +87,12 @@ def load_resolution(path: Path) -> pd.DataFrame:
     return frame[['drug_idx', 'canonical_smiles', 'pubchem_cid']].sort_values('drug_idx')
 
 
-def load_structure_matches(chemreps: Path, smiles_to_idx: dict[str, int], chunksize: int) -> tuple[dict[str, set[str]], int]:
+def load_structure_matches(
+    chemreps: Path,
+    smiles_to_idx: dict[str, int],
+    chunksize: int,
+    progress_every: int,
+) -> tuple[dict[str, set[str]], int]:
     matched: dict[str, set[str]] = defaultdict(set)
     source_rows = 0
     reader = pd.read_csv(
@@ -104,6 +109,12 @@ def load_structure_matches(chemreps: Path, smiles_to_idx: dict[str, int], chunks
             smiles = canonicalize(raw_smiles)
             if smiles in smiles_to_idx and chembl_id:
                 matched[smiles].add(chembl_id)
+        if source_rows % progress_every < len(chunk):
+            print(
+                f'ChEMBL structure scan progress: {source_rows:,} rows; '
+                f'{len(matched)}/{len(smiles_to_idx)} drugs matched',
+                flush=True,
+            )
     if not saw_rows:
         raise ValueError(f'ChEMBL chemreps file is empty: {chemreps}')
     return matched, source_rows
@@ -320,6 +331,7 @@ def main() -> None:
     parser.add_argument('--molecule-batch-size', type=int, default=20)
     parser.add_argument('--page-limit', type=int, default=1000)
     parser.add_argument('--chunksize', type=int, default=100_000)
+    parser.add_argument('--progress-every', type=int, default=250_000)
     parser.add_argument('--request-delay-seconds', type=float, default=0.15)
     parser.add_argument('--user-agent', default='AuditDDI research feature preparation (contact: project maintainer)')
     args = parser.parse_args()
@@ -327,8 +339,8 @@ def main() -> None:
     chemreps = args.chemreps or data_root / 'chembl' / 'chembl_37_chemreps.txt.gz'
     resolution_path = args.resolution or data_root / RESOLUTION_RELATIVE
     output_dir = args.output_dir or data_root / 'processed' / 'seven_branch'
-    if args.top_targets < 1 or args.molecule_batch_size < 1 or args.page_limit < 1:
-        raise ValueError('top-targets, molecule-batch-size, and page-limit must be positive.')
+    if min(args.top_targets, args.molecule_batch_size, args.page_limit, args.progress_every) < 1:
+        raise ValueError('top-targets, molecule-batch-size, page-limit, and progress-every must be positive.')
     for label, path in [('ChEMBL chemreps', chemreps), ('TWOSIDES identity resolution', resolution_path)]:
         if not path.is_file():
             raise FileNotFoundError(f'{label} not found: {path}')
@@ -338,7 +350,9 @@ def main() -> None:
     smiles_to_idx = dict(zip(resolution['canonical_smiles'], resolution['drug_idx']))
     print(f'Identity rows: {len(resolution)}; canonical drugs: {len(smiles_to_idx)}')
     print(f'Scanning ChEMBL structures: {chemreps}')
-    chembl_ids_by_smiles, structure_rows = load_structure_matches(chemreps, smiles_to_idx, args.chunksize)
+    chembl_ids_by_smiles, structure_rows = load_structure_matches(
+        chemreps, smiles_to_idx, args.chunksize, args.progress_every
+    )
     matched_smiles = set(chembl_ids_by_smiles)
     molecule_ids = sorted(set().union(*chembl_ids_by_smiles.values())) if matched_smiles else []
     print(
