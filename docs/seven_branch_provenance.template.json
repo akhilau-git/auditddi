@@ -1,0 +1,41 @@
+{
+  "branches": {
+    "drug_profile": {
+      "dataset": "",
+      "release": "",
+      "feature_definition": "",
+      "drug_identity_mapping": ""
+    },
+    "adverse_event": {
+      "dataset": "",
+      "release": "",
+      "feature_definition": "",
+      "drug_identity_mapping": "",
+      "pairwise_ddi_signals_excluded": false,
+      "cutoff_date": ""
+    },
+    "protein_target": {
+      "dataset": "",
+      "release": "",
+      "feature_definition": "",
+      "drug_identity_mapping": "",
+      "activity_encoding": ""
+    },
+    "pdb_structure": {
+      "dataset": "",
+      "release": "",
+      "feature_definition": "",
+      "drug_identity_mapping": "",
+      "structure_to_drug_mapping": ""
+    },
+    "gene_expression": {
+      "dataset": "",
+      "release": "",
+      "feature_definition": "",
+      "drug_identity_mapping": "",
+      "cell_or_tissue_context": "",
+      "perturbation_type": "",
+      "aggregation_rule": ""
+    }
+  }
+}
