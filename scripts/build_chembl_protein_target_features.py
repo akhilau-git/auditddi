@@ -138,7 +138,26 @@ def get_json(session: requests.Session, url: str, params: dict[str, Any] | None 
 def api_version(session: requests.Session) -> str:
     result = get_json(session, urljoin(API_ROOT, 'status.json'))
     status = result.get('status', result)
-    return str(status.get('chembl_db_version') or status.get('database_version') or status)
+    if isinstance(status, dict):
+        version = (
+            status.get('chembl_db_version')
+            or status.get('database_version')
+            or status.get('version')
+        )
+        if version:
+            return str(version)
+    version = (
+        result.get('chembl_db_version')
+        or result.get('database_version')
+        or result.get('version')
+    )
+    if version:
+        return str(version)
+    # Some status API deployments expose only service health in `status`.
+    # Preserve that response accurately rather than crashing or inventing a DB
+    # version; callers can see the recorded value and inspect API metadata.
+    status_text = str(status).strip()
+    return f'api-status-{status_text or "unknown"}-version-not-exposed'
 
 
 def chunks(values: list[str], size: int) -> Iterable[list[str]]:
