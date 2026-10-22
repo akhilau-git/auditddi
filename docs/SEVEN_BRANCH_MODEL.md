@@ -76,7 +76,9 @@ measurements. The extractor below exact-matches canonical SMILES to ChEMBL
 molecule IDs, then uses the official paginated activity endpoint. It filters to
 human records with confidence score ≥8, binding or functional assays, exact
 standard relations, and pChEMBL-backed IC50/Ki/Kd/EC50/AC50 measurements. Assay
-replicates are collapsed by median per drug–target pair; the most widely
+confidence is fetched from the ChEMBL assay endpoint and joined to activity
+records by assay ChEMBL ID (the activity response does not reliably include
+that field). Activity replicates are collapsed by median per drug–target pair; the most widely
 observed targets are retained, with a deterministic target-ID tie break. Each
 target contributes a standardized affinity value and an observed bit, so
 missing evidence is distinguishable from a measured value. The script caches

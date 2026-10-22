@@ -39,10 +39,11 @@ ALLOWED_STANDARD_TYPES = {'IC50', 'KI', 'KD', 'EC50', 'AC50'}
 ALLOWED_ASSAY_TYPES = {'B', 'F'}
 API_FIELDS = ','.join((
     'molecule_chembl_id', 'target_chembl_id', 'target_organism',
-    'target_tax_id', 'target_type', 'assay_type', 'confidence_score',
+    'target_tax_id', 'target_type', 'assay_type',
     'standard_type', 'standard_relation', 'pchembl_value',
     'assay_chembl_id', 'document_chembl_id',
 ))
+ASSAY_FIELDS = 'assay_chembl_id,confidence_score'
 
 
 def sha256_file(path: Path) -> str:
@@ -207,7 +208,102 @@ def fetch_activity_batch(
     return records
 
 
-def keep_activity(record: dict[str, Any]) -> tuple[bool, str | None]:
+def fetch_assay_batch(
+    session: requests.Session,
+    assay_ids: list[str],
+    cache_path: Path,
+    page_limit: int,
+    delay: float,
+) -> list[dict[str, Any]]:
+    """Fetch assay-level confidence scores, cached independently of activities."""
+    if cache_path.is_file():
+        with cache_path.open(encoding='utf-8') as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    endpoint = urljoin(API_ROOT, 'assay.json')
+    params: dict[str, Any] | None = {
+        'assay_chembl_id__in': ','.join(assay_ids),
+        'only': ASSAY_FIELDS,
+        'limit': page_limit,
+        'offset': 0,
+    }
+    records: list[dict[str, Any]] = []
+    while endpoint:
+        payload = get_json(session, endpoint, params)
+        params = None
+        records.extend(payload.get('assays', []))
+        next_page = payload.get('page_meta', {}).get('next')
+        endpoint = urljoin('https://www.ebi.ac.uk', next_page) if next_page else ''
+        if endpoint:
+            time.sleep(delay)
+    temp = cache_path.with_suffix(cache_path.suffix + '.tmp')
+    with temp.open('w', encoding='utf-8', newline='\n') as handle:
+        for record in records:
+            handle.write(json.dumps(record, separators=(',', ':')) + '\n')
+    temp.replace(cache_path)
+    return records
+
+
+def load_assay_confidence(
+    session: requests.Session,
+    activity_records: list[dict[str, Any]],
+    cache_dir: Path,
+    batch_size: int,
+    page_limit: int,
+    delay: float,
+) -> tuple[dict[str, int | None], dict[str, Any]]:
+    """Join cached activity records to assay-level confidence metadata."""
+    assay_ids = sorted({
+        str(record.get('assay_chembl_id') or '').strip()
+        for record in activity_records
+        if str(record.get('assay_chembl_id') or '').strip()
+    })
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    confidence_values: dict[str, set[int]] = defaultdict(set)
+    assays_missing_confidence: set[str] = set()
+    for batch_index, assay_batch in enumerate(chunks(assay_ids, batch_size)):
+        cache_path = cache_dir / f'assay_batch_{batch_index:05d}.jsonl'
+        records = fetch_assay_batch(session, assay_batch, cache_path, page_limit, delay)
+        for record in records:
+            assay_id = str(record.get('assay_chembl_id') or '').strip()
+            raw_score = record.get('confidence_score')
+            try:
+                confidence_values[assay_id].add(int(raw_score))
+            except (TypeError, ValueError):
+                assays_missing_confidence.add(assay_id)
+        print(
+            f'Assay metadata batch {batch_index + 1}/'
+            f'{math.ceil(len(assay_ids) / batch_size)}: '
+            f'{len(records):,} records (cached in Drive)',
+            flush=True,
+        )
+        if batch_index + 1 < math.ceil(len(assay_ids) / batch_size):
+            time.sleep(delay)
+
+    # In the unusual case of inconsistent metadata for one assay, use the
+    # lower score so the high-confidence threshold remains conservative.
+    scores: dict[str, int | None] = {
+        assay_id: min(values) if values else None
+        for assay_id, values in confidence_values.items()
+    }
+    for assay_id in assays_missing_confidence:
+        scores.setdefault(assay_id, None)
+    summary = {
+        'unique_activity_assays': len(assay_ids),
+        'assay_metadata_records': sum(len(values) for values in confidence_values.values())
+            + len(assays_missing_confidence),
+        'assays_with_confidence_score': sum(score is not None for score in scores.values()),
+        'assays_missing_confidence_score': sum(score is None for score in scores.values()),
+        'assay_metadata_cache': str(cache_dir),
+        'assay_metadata_endpoint': urljoin(API_ROOT, 'assay.json'),
+        'conflicting_scores_use_minimum': True,
+    }
+    return scores, summary
+
+
+def keep_activity(
+    record: dict[str, Any], assay_confidence: dict[str, int | None]
+) -> tuple[bool, str | None]:
     organism = str(record.get('target_organism') or '').strip().lower()
     tax_id = str(record.get('target_tax_id') or '').strip()
     if organism != 'homo sapiens' and tax_id != '9606':
@@ -219,7 +315,11 @@ def keep_activity(record: dict[str, Any]) -> tuple[bool, str | None]:
     if str(record.get('standard_relation') or '').strip() not in {'=', '=='}:
         return False, None
     try:
-        confidence = int(record.get('confidence_score'))
+        assay_id = str(record.get('assay_chembl_id') or '').strip()
+        confidence = assay_confidence.get(assay_id)
+        if confidence is None:
+            return False, None
+        confidence = int(confidence)
         pchembl = float(record.get('pchembl_value'))
     except (TypeError, ValueError):
         return False, None
@@ -233,6 +333,7 @@ def build_features(
     resolution: pd.DataFrame,
     chembl_ids_by_smiles: dict[str, set[str]],
     records: list[dict[str, Any]],
+    assay_confidence: dict[str, int | None],
     top_targets: int,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     smiles_to_idx = dict(zip(resolution['canonical_smiles'], resolution['drug_idx']))
@@ -247,7 +348,7 @@ def build_features(
     eligible_rows = 0
     ambiguous_molecule_links = 0
     for record in records:
-        keep, target = keep_activity(record)
+        keep, target = keep_activity(record, assay_confidence)
         if not keep or target is None:
             rejection_counts['filtered_out'] += 1
             continue
@@ -337,6 +438,7 @@ def build_features(
             'minimum_confidence_score': 8,
             'pchembl_value': 'finite, between 0 and 14',
         },
+        'confidence_score_source': 'assay endpoint confidence_score joined by assay_chembl_id',
     }
     return table, summary
 
@@ -349,6 +451,7 @@ def main() -> None:
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--top-targets', type=int, default=512)
     parser.add_argument('--molecule-batch-size', type=int, default=20)
+    parser.add_argument('--assay-batch-size', type=int, default=100)
     parser.add_argument('--page-limit', type=int, default=1000)
     parser.add_argument('--chunksize', type=int, default=100_000)
     parser.add_argument('--progress-every', type=int, default=250_000)
@@ -359,8 +462,12 @@ def main() -> None:
     chemreps = args.chemreps or data_root / 'chembl' / 'chembl_37_chemreps.txt.gz'
     resolution_path = args.resolution or data_root / RESOLUTION_RELATIVE
     output_dir = args.output_dir or data_root / 'processed' / 'seven_branch'
-    if min(args.top_targets, args.molecule_batch_size, args.page_limit, args.progress_every) < 1:
-        raise ValueError('top-targets, molecule-batch-size, page-limit, and progress-every must be positive.')
+    if min(args.top_targets, args.molecule_batch_size, args.assay_batch_size,
+           args.page_limit, args.progress_every) < 1:
+        raise ValueError(
+            'top-targets, molecule-batch-size, assay-batch-size, page-limit, '
+            'and progress-every must be positive.'
+        )
     for label, path in [('ChEMBL chemreps', chemreps), ('TWOSIDES identity resolution', resolution_path)]:
         if not path.is_file():
             raise FileNotFoundError(f'{label} not found: {path}')
@@ -402,7 +509,25 @@ def main() -> None:
         if batch_index + 1 < len(batches):
             time.sleep(args.request_delay_seconds)
 
-    table, audit = build_features(resolution, chembl_ids_by_smiles, all_records, args.top_targets)
+    assay_cache_dir = output_dir / 'chembl_assay_cache' / f'chembl_{cache_version}'
+    assay_confidence, assay_audit = load_assay_confidence(
+        session,
+        all_records,
+        assay_cache_dir,
+        args.assay_batch_size,
+        args.page_limit,
+        args.request_delay_seconds,
+    )
+    print(
+        'Assays with confidence scores:',
+        assay_audit['assays_with_confidence_score'], '/',
+        assay_audit['unique_activity_assays'],
+    )
+    table, audit = build_features(
+        resolution, chembl_ids_by_smiles, all_records,
+        assay_confidence, args.top_targets,
+    )
+    audit['assay_metadata'] = assay_audit
     table_path = output_dir / 'protein_target.csv'
     table.to_csv(table_path, index=False, float_format='%.7g')
     manifest = {
@@ -410,8 +535,9 @@ def main() -> None:
         'dataset': 'ChEMBL activity records',
         'release': version,
         'api_status': api_status,
-        'source': 'ChEMBL REST activity endpoint',
+        'source': 'ChEMBL REST activity and assay endpoints',
         'source_api': urljoin(API_ROOT, 'activity.json'),
+        'assay_metadata_api': urljoin(API_ROOT, 'assay.json'),
         'activity_encoding': audit['feature_encoding'],
         'drug_identity_mapping': (
             'exact RDKit canonical-SMILES match between audited TWOSIDES PubChem identity table '
@@ -432,6 +558,7 @@ def main() -> None:
         },
         'audit': audit,
         'cache_dir': str(cache_dir),
+        'assay_cache_dir': str(assay_cache_dir),
         'output_csv': str(table_path),
         'output_sha256': sha256_file(table_path),
         'limitations': [
