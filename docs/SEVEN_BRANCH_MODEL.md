@@ -30,13 +30,28 @@ one compact `.npz` file. Prepare one CSV per branch, each with:
 - at most one row per canonical drug. Aggregate GEO conditions or multiple
   protein/structure observations upstream using an explicit documented rule.
 
-The existing `processed/auditddi_v2/source_feature_matrix.npz` can be used as
-the initial `drug_profile` table (it has `canonical_smiles`, `features`, and
-`feature_names`). Its 51 columns combine 23 PharmGKB gene indicators, 24
-openFDA CYP flags, a reserved zero FAERS slot, and source-availability flags;
-the reserved FAERS slot does **not** replace the adverse-event branch. The
-openFDA adverse-reaction extractor streams the label ZIP files and deliberately
-ignores pairwise `drug_interactions` text:
+The backward-compatible `processed/auditddi_v2/source_feature_matrix.npz`
+still has 51 columns, but it is not the required input for the new model. Build
+a variable-width `drug_profile.csv` from the full mapped PharmGKB drug-gene
+annotation table. It defaults to up to 2,048 observed genes (with no minimum
+frequency cutoff), keyed through the selected PubChem CID crosswalk. The
+profile builder records its selected vocabulary and coverage. Missing drugs
+are omitted so the bundle builder can represent them with the explicit branch
+mask. This currently implements the real mapped **gene-annotation** portion
+of the drug profile; it does not claim measured gene expression, variant
+features, or pathway features. Those require their own source evidence.
+
+Run after `prepare_auditddi_source_bundle.py` has emitted the mapped long table:
+
+```bash
+python scripts/build_pharmacogenomic_drug_profile.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi
+```
+
+It writes `processed/seven_branch/drug_profile.csv` and
+`drug_profile.manifest.json`. The openFDA adverse-reaction extractor streams
+the label ZIP files and deliberately ignores pairwise `drug_interactions`
+text:
 
 ```bash
 python scripts/build_openfda_adverse_event_features.py \
@@ -84,6 +99,19 @@ these affinity features alone. The ChEMBL API returns paginated results and
 supports field filters and selected fields, as described in its
 [official data web-service documentation](https://chembl.gitbook.io/chembl-interface-documentation/web-services/chembl-data-web-services).
 
+After the source splits and feature tables are present in Drive, audit branch
+coverage on every saved split before training:
+
+```bash
+python scripts/audit_seven_branch_split_coverage.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi
+```
+
+The report is saved as `processed/seven_branch/split_branch_coverage.csv` and
+includes drug coverage plus pair coverage where both endpoints, or at least
+one endpoint, has an observed feature row. This audit does not modify the
+splits or impute missing branch data.
+
 Also provide a provenance JSON with a `branches` object. Each branch must name
 its `dataset`, `release`, `feature_definition`, and `drug_identity_mapping`.
 Adverse-event provenance must also include `pairwise_ddi_signals_excluded: true`
@@ -96,7 +124,7 @@ Example, after placing these compact tables under the mounted Drive data root:
 
 ```bash
 python scripts/build_seven_branch_feature_bundle.py \
-  --drug-profile /content/drive/MyDrive/Projects/auditddi/processed/auditddi_v2/source_feature_matrix.npz \
+  --drug-profile /content/drive/MyDrive/Projects/auditddi/processed/seven_branch/drug_profile.csv \
   --adverse-event /content/drive/MyDrive/Projects/auditddi/processed/seven_branch/adverse_event.csv \
   --protein-target /content/drive/MyDrive/Projects/auditddi/processed/seven_branch/protein_target.csv \
   --pdb-structure /content/drive/MyDrive/Projects/auditddi/processed/seven_branch/pdb_structure.csv \
