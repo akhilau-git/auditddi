@@ -46,7 +46,7 @@ def _drug_key(value: Any) -> str | None:
     return text
 
 
-def _feature_drugs(path: Path, identities: pd.DataFrame) -> set[str]:
+def _feature_smiles(path: Path, known_smiles: set[str]) -> set[str]:
     if not path.is_file():
         return set()
     frame = pd.read_csv(path, low_memory=False)
@@ -54,14 +54,10 @@ def _feature_drugs(path: Path, identities: pd.DataFrame) -> set[str]:
         raise ValueError(f'{path} must have a canonical_smiles column.')
     if frame['canonical_smiles'].duplicated().any():
         raise ValueError(f'{path} contains duplicate canonical_smiles rows.')
-    smiles_to_idx = dict(zip(
-        identities['canonical_smiles'].astype(str),
-        identities['drug_idx'].map(_drug_key),
-    ))
     return {
-        smiles_to_idx[smiles]
+        smiles
         for smiles in frame['canonical_smiles'].dropna().astype(str)
-        if smiles in smiles_to_idx and smiles_to_idx[smiles] is not None
+        if smiles in known_smiles
     }
 
 
@@ -86,13 +82,28 @@ def audit(data_root: Path, output: Path | None = None) -> pd.DataFrame:
         raise ValueError(f'{identities_path} needs columns {sorted(required)}.')
     identities = identities.dropna(subset=['drug_idx', 'canonical_smiles']).copy()
     identities['drug_idx'] = identities['drug_idx'].map(_drug_key)
-    identities['canonical_smiles'] = identities['canonical_smiles'].astype(str)
+    identities['canonical_smiles'] = identities['canonical_smiles'].astype(str).str.strip()
     if identities['drug_idx'].duplicated().any():
         raise ValueError('Identity table has duplicate drug_idx values.')
+    if identities['canonical_smiles'].duplicated().any():
+        raise ValueError('Identity table has duplicate canonical_smiles values.')
+    known_smiles = set(identities['canonical_smiles'])
+    index_to_smiles = dict(zip(identities['drug_idx'], identities['canonical_smiles']))
+
+    def resolve_split_drug(value: Any) -> str | None:
+        if pd.isna(value):
+            return None
+        text = str(value).strip()
+        # The trainer stores split endpoints as canonical SMILES. Also accept
+        # integer IDs for older/raw splits, resolving them through the same
+        # audited catalogue rather than comparing unlike key types.
+        if text in known_smiles:
+            return text
+        return index_to_smiles.get(_drug_key(value))
 
     feature_dir = data_root / 'processed' / 'seven_branch'
     branch_drugs = {
-        name: _feature_drugs(feature_dir / filename, identities)
+        name: _feature_smiles(feature_dir / filename, known_smiles)
         for name, filename in BRANCH_FILES.items()
     }
     manifests = sorted(
@@ -117,8 +128,8 @@ def audit(data_root: Path, output: Path | None = None) -> pd.DataFrame:
                 continue
             split = pd.read_csv(split_path, low_memory=False)
             left_col, right_col = _pair_columns(split, split_path)
-            left = split[left_col].map(_drug_key)
-            right = split[right_col].map(_drug_key)
+            left = split[left_col].map(resolve_split_drug)
+            right = split[right_col].map(resolve_split_drug)
             valid = left.notna() & right.notna()
             left, right = left[valid], right[valid]
             all_drugs = set(left) | set(right)
