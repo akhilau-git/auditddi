@@ -135,9 +135,12 @@ def get_json(session: requests.Session, url: str, params: dict[str, Any] | None 
     raise RuntimeError(f'ChEMBL API request failed after retries: {url}') from last_error
 
 
-def api_version(session: requests.Session) -> str:
+def api_metadata(session: requests.Session) -> tuple[str | None, str]:
     result = get_json(session, urljoin(API_ROOT, 'status.json'))
     status = result.get('status', result)
+    status_text = str(status).strip() if not isinstance(status, dict) else str(
+        status.get('status') or status.get('message') or 'status-object'
+    )
     if isinstance(status, dict):
         version = (
             status.get('chembl_db_version')
@@ -145,19 +148,17 @@ def api_version(session: requests.Session) -> str:
             or status.get('version')
         )
         if version:
-            return str(version)
+            return str(version), status_text
     version = (
         result.get('chembl_db_version')
         or result.get('database_version')
         or result.get('version')
     )
     if version:
-        return str(version)
-    # Some status API deployments expose only service health in `status`.
-    # Preserve that response accurately rather than crashing or inventing a DB
-    # version; callers can see the recorded value and inspect API metadata.
-    status_text = str(status).strip()
-    return f'api-status-{status_text or "unknown"}-version-not-exposed'
+        return str(version), status_text
+    # Some status API deployments expose service health but not the database
+    # release. Preserve the health response without treating it as a release.
+    return None, status_text or 'status-not-exposed'
 
 
 def chunks(values: list[str], size: int) -> Iterable[list[str]]:
@@ -383,9 +384,10 @@ def main() -> None:
 
     session = requests.Session()
     session.headers.update({'User-Agent': args.user_agent, 'Accept': 'application/json'})
-    version = api_version(session)
-    print('ChEMBL API database version:', version)
-    cache_version = re.sub(r'[^A-Za-z0-9_.-]+', '_', version)
+    version, api_status = api_metadata(session)
+    print('ChEMBL API database version:', version or 'not exposed by status response')
+    print('ChEMBL API status:', api_status)
+    cache_version = re.sub(r'[^A-Za-z0-9_.-]+', '_', version or 'version_unreported')
     cache_dir = output_dir / 'chembl_activity_cache' / f'chembl_{cache_version}'
     cache_dir.mkdir(parents=True, exist_ok=True)
     all_records: list[dict[str, Any]] = []
@@ -407,6 +409,7 @@ def main() -> None:
         'schema': 'auditddi_chembl_protein_target_features_v1',
         'dataset': 'ChEMBL activity records',
         'release': version,
+        'api_status': api_status,
         'source': 'ChEMBL REST activity endpoint',
         'source_api': urljoin(API_ROOT, 'activity.json'),
         'activity_encoding': audit['feature_encoding'],
