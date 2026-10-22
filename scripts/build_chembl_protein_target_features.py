@@ -411,7 +411,15 @@ def build_features(
     table = pd.DataFrame({'canonical_smiles': resolution['canonical_smiles'].tolist()})
     for name, vector in columns.items():
         table[name] = vector
-    drugs_with_features = int((table.drop(columns='canonical_smiles').to_numpy().sum(axis=1) > 0).sum())
+    # Missing-target rows are retained for alignment with the full drug
+    # catalogue, so coverage must come from explicit observed bits rather than
+    # row presence or the sum of signed/zero-filled affinity values.
+    observed_columns = [column for column in table if column.startswith('observed_')]
+    if not observed_columns:
+        raise RuntimeError('Target feature table has no observed_* availability columns.')
+    drugs_with_features = int(
+        table[observed_columns].gt(0).any(axis=1).sum()
+    )
     summary = {
         'total_api_activity_records': len(records),
         'eligible_human_activity_records_before_exact_molecule_mapping': eligible_rows,

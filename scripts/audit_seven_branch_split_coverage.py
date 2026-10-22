@@ -54,10 +54,20 @@ def _feature_smiles(path: Path, known_smiles: set[str]) -> set[str]:
         raise ValueError(f'{path} must have a canonical_smiles column.')
     if frame['canonical_smiles'].duplicated().any():
         raise ValueError(f'{path} contains duplicate canonical_smiles rows.')
+    # Some feature tables intentionally contain one row for every drug and
+    # encode missingness with per-feature observed_* bits. Row presence alone
+    # therefore overstates coverage (notably for protein_target.csv).
+    observed_columns = [column for column in frame if column.startswith('observed_')]
+    if observed_columns:
+        observed = frame[observed_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+        has_features = observed.gt(0).any(axis=1)
+    else:
+        # Other current branch tables contain only drugs with observed data.
+        has_features = pd.Series(True, index=frame.index)
     return {
         smiles
-        for smiles in frame['canonical_smiles'].dropna().astype(str)
-        if smiles in known_smiles
+        for smiles, has_data in zip(frame['canonical_smiles'], has_features)
+        if has_data and pd.notna(smiles) and str(smiles) in known_smiles
     }
 
 
