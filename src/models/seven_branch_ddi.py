@@ -54,8 +54,9 @@ class _MaskedFeatureEncoder(nn.Module):
 class SevenBranchDDIModel(nn.Module):
     """Shared per-drug encoders with order-invariant pair fusion.
 
-    Pair fusion is exactly `[hA + hB, abs(hA - hB), hA * hB]`, so swapping
-    drug order cannot change the binary association logit.
+    Each ordered pair is fused as `[hA, hB, hA - hB]`, as shown in the
+    proposed system. The classifier scores both pair orders and averages the
+    logits, so swapping drug order cannot change the undirected association.
     """
 
     def __init__(
@@ -146,14 +147,22 @@ class SevenBranchDDIModel(nn.Module):
         return torch.cat(parts, dim=1), molecular
 
     def forward(self, drug_a, drug_b, **_unused):
-        representation_a, molecular_a = self.encode_drug(drug_a)
-        representation_b, molecular_b = self.encode_drug(drug_b)
-        pair = torch.cat((
-            representation_a + representation_b,
-            torch.abs(representation_a - representation_b),
-            representation_a * representation_b,
+        representation_a, _ = self.encode_drug(drug_a)
+        representation_b, _ = self.encode_drug(drug_b)
+        pair_ab = torch.cat((
+            representation_a,
+            representation_b,
+            representation_a - representation_b,
         ), dim=1)
-        risk_logits = self.risk_classifier(pair).squeeze(-1)
+        pair_ba = torch.cat((
+            representation_b,
+            representation_a,
+            representation_b - representation_a,
+        ), dim=1)
+        risk_logits = 0.5 * (
+            self.risk_classifier(pair_ab).squeeze(-1)
+            + self.risk_classifier(pair_ba).squeeze(-1)
+        )
         # Preserve the legacy trainer's three-tensor return contract. This
         # architecture does not train or claim a drug-toxicity prediction head.
         no_toxicity_prediction = torch.zeros_like(risk_logits)
