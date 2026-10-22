@@ -12,9 +12,12 @@ system:
 7. Context-defined gene-expression profile → MLP with an explicit availability mask.
 
 For each drug, the seven encoded representations are concatenated. The pair
-head uses `[hA + hB, abs(hA - hB), hA * hB]`, which makes the binary DDI score
-invariant to drug order. The old checkpoint architecture remains separate; a
-checkpoint trained with it cannot be resumed as this model.
+head follows the proposed `[hA || hB || hA - hB]` fusion. Because the task is an
+undirected binary DDI association, the shared MLP scores both drug orders and
+averages their logits. This preserves the proposed fusion while guaranteeing
+that swapping drug order cannot change the prediction. The old checkpoint
+architecture remains separate; a checkpoint trained with it cannot be resumed
+as this model.
 
 ## Compact feature-table contract
 
@@ -27,15 +30,59 @@ one compact `.npz` file. Prepare one CSV per branch, each with:
 - at most one row per canonical drug. Aggregate GEO conditions or multiple
   protein/structure observations upstream using an explicit documented rule.
 
-Required tables: the existing `processed/auditddi_v2/source_feature_matrix.npz`
-can be used directly for `drug_profile` (it has `canonical_smiles`, `features`,
-and `feature_names`). It is the current 51-column PharmGKB/openFDA profile; its
-reserved zero FAERS slot does **not** replace the adverse-event branch. The
-other required tables are `adverse_event.csv`, `protein_target.csv`,
+The existing `processed/auditddi_v2/source_feature_matrix.npz` can be used as
+the initial `drug_profile` table (it has `canonical_smiles`, `features`, and
+`feature_names`). Its 51 columns combine 23 PharmGKB gene indicators, 24
+openFDA CYP flags, a reserved zero FAERS slot, and source-availability flags;
+the reserved FAERS slot does **not** replace the adverse-event branch. The
+openFDA adverse-reaction extractor streams the label ZIP files and deliberately
+ignores pairwise `drug_interactions` text:
+
+```bash
+python scripts/build_openfda_adverse_event_features.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi \
+  --output-dir /content/drive/MyDrive/Projects/auditddi/processed/seven_branch
+```
+
+It writes `adverse_event.csv` and `adverse_event.manifest.json`. The CSV is a
+compact, drug-keyed TF-IDF representation of the label `adverse_reactions`
+section; it is not an incidence estimate. Review mapped-drug coverage and
+label-date/source overlap before training. The other required tables are
+`protein_target.csv`,
 `pdb_structure.csv`, and `gene_expression.csv`. Missing drugs are represented
 by an explicit row mask in the bundle. The bundle builder rejects partially
 missing feature rows and duplicate drug rows. It does not fabricate branch
 data or infer missing values silently.
+
+### ChEMBL protein/target preparation
+
+The existing ChEMBL 37 chemreps file supplies structures, not drug–target
+measurements. The extractor below exact-matches canonical SMILES to ChEMBL
+molecule IDs, then uses the official paginated activity endpoint. It filters to
+human records with confidence score ≥8, binding or functional assays, exact
+standard relations, and pChEMBL-backed IC50/Ki/Kd/EC50/AC50 measurements. Assay
+replicates are collapsed by median per drug–target pair; the most widely
+observed targets are retained, with a deterministic target-ID tie break. Each
+target contributes a standardized affinity value and an observed bit, so
+missing evidence is distinguishable from a measured value. The script caches
+complete API batches in Drive and writes its filters, API release, hashes, and
+coverage to a manifest.
+
+Run in Colab after Drive is mounted and the updated project source is available:
+
+```bash
+python scripts/build_chembl_protein_target_features.py \
+  --data-root /content/drive/MyDrive/Projects/auditddi \
+  --chemreps /content/drive/MyDrive/Projects/auditddi/chembl/chembl_37_chemreps.txt.gz \
+  --output-dir /content/drive/MyDrive/Projects/auditddi/processed/seven_branch
+```
+
+Review `protein_target.manifest.json` and `protein_target.csv` before bundling.
+The branch represents measured human drug–target activity profiles; target
+sequence embeddings are a separate enhancement and must not be claimed from
+these affinity features alone. The ChEMBL API returns paginated results and
+supports field filters and selected fields, as described in its
+[official data web-service documentation](https://chembl.gitbook.io/chembl-interface-documentation/web-services/chembl-data-web-services).
 
 Also provide a provenance JSON with a `branches` object. Each branch must name
 its `dataset`, `release`, `feature_definition`, and `drug_identity_mapping`.
