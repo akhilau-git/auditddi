@@ -1247,26 +1247,45 @@ def filter_graph_compatible_pairs(
     if missing:
         raise ValueError(f'Pair data is missing required columns: {sorted(missing)}.')
 
-    keep_rows: list[bool] = []
-    exclusions: list[dict[str, Any]] = []
-    audit_columns = ['dataset_row_index', *dataframe.columns, 'source_graph_status', 'target_graph_status']
-    for row_index, row in dataframe.iterrows():
-        source_reason = graph_compatibility_reason(row[source_col])
-        target_reason = graph_compatibility_reason(row[target_col])
-        source_status = source_reason or 'graph_compatible'
-        target_status = target_reason or 'graph_compatible'
-        keep_row = source_reason is None and target_reason is None
-        keep_rows.append(keep_row)
-        if not keep_row:
-            exclusions.append({
-                'dataset_row_index': str(row_index),
-                **row.to_dict(),
-                'source_graph_status': source_status,
-                'target_graph_status': target_status,
-            })
+    unique_smiles = pd.unique(pd.concat(
+        [dataframe[source_col], dataframe[target_col]], ignore_index=True
+    ).dropna())
+    print(
+        'Graph-compatibility audit: checking '
+        f'{len(unique_smiles):,} unique structures across {len(dataframe):,} pairs.'
+    )
+    compatibility_cache = {
+        str(smiles): graph_compatibility_reason(smiles)
+        for smiles in unique_smiles
+    }
+    source_reasons = dataframe[source_col].map(compatibility_cache)
+    target_reasons = dataframe[target_col].map(compatibility_cache)
+    keep_mask = source_reasons.isna() & target_reasons.isna()
 
-    clean = dataframe.loc[keep_rows].copy().reset_index(drop=True)
-    return clean, pd.DataFrame(exclusions, columns=audit_columns)
+    clean = dataframe.loc[keep_mask].copy().reset_index(drop=True)
+    exclusions = dataframe.loc[~keep_mask].copy()
+    if not exclusions.empty:
+        exclusions.insert(
+            0,
+            'dataset_row_index',
+            exclusions.index.astype(str),
+        )
+        exclusions['source_graph_status'] = (
+            source_reasons.loc[~keep_mask].fillna('graph_compatible').to_numpy()
+        )
+        exclusions['target_graph_status'] = (
+            target_reasons.loc[~keep_mask].fillna('graph_compatible').to_numpy()
+        )
+    audit_columns = [
+        'dataset_row_index', *dataframe.columns,
+        'source_graph_status', 'target_graph_status',
+    ]
+    exclusions = exclusions.reindex(columns=audit_columns)
+    print(
+        'Graph-compatibility audit complete: '
+        f'{len(clean):,} retained pairs; {len(exclusions):,} excluded pairs.'
+    )
+    return clean, exclusions
 
 
 def save_counterion_curation_candidates(exclusions: pd.DataFrame, audit_dir: Path) -> dict[str, Any]:
