@@ -2408,13 +2408,81 @@ def _prepare_positive_edges(
 ) -> tuple[pd.DataFrame, dict[str, Any]] | tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
     """Load audited Drive preparation, with a legacy edge-file fallback.
 
-    The versioned parquet stores integer indices into ``drugs_clean.csv``;
-    translate those indices to canonical structures here so the molecular
-    trainer consumes the user's current prepared data instead of requiring an
-    obsolete, separately generated edge CSV.
+    Frozen-split runs use the audited identity-linked pair table that was also
+    used to create those splits. Other runs can use the versioned parquet, which
+    stores integer indices into ``drugs_clean.csv``.
     """
     audit_dir.mkdir(parents=True, exist_ok=True)
-    if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file():
+    fixed_pair_splits_dir = get_auditddi_env('FIXED_PAIR_SPLITS_DIR')
+    audited_pair_table = SOURCE_BUNDLE / 'twosides_pairs.csv'
+    identity_map_path = DRIVE_BASE / 'processed' / 'auditddi_v1' / 'twosides_drug_cid_resolution.csv'
+    excluded_rows = 0
+    excluded_pair_count = 0
+    if fixed_pair_splits_dir and audited_pair_table.is_file() and identity_map_path.is_file():
+        # Frozen splits were built from the audited v2 identity-linked pair table.
+        # Use that exact label source here instead of rereading all 8.8M event rows
+        # from the legacy parquet and silently deriving a different pair universe.
+        print(
+            'Loading TWOSIDES positives from the audited pair table for frozen-split alignment.'
+        )
+        pair_table = pd.read_csv(audited_pair_table, usecols=['pair_a', 'pair_b'])
+        identity_map = pd.read_csv(
+            identity_map_path, usecols=['drug_idx', 'canonical_smiles']
+        )
+        identity_map['drug_idx'] = pd.to_numeric(
+            identity_map['drug_idx'], errors='coerce'
+        )
+        identity_map = identity_map.dropna(subset=['drug_idx', 'canonical_smiles']).copy()
+        identity_map['drug_idx'] = identity_map['drug_idx'].astype(int)
+        identity_map['canonical_smiles'] = identity_map['canonical_smiles'].astype(str).str.strip()
+        identity_map = identity_map.loc[identity_map['canonical_smiles'] != ''].copy()
+        if identity_map['drug_idx'].duplicated().any():
+            raise ValueError('TWOSIDES CID resolution map has duplicate drug_idx values.')
+        smiles_by_idx = identity_map.set_index('drug_idx')['canonical_smiles']
+        pair_table['pair_a'] = pd.to_numeric(pair_table['pair_a'], errors='coerce')
+        pair_table['pair_b'] = pd.to_numeric(pair_table['pair_b'], errors='coerce')
+        if pair_table[['pair_a', 'pair_b']].isna().any().any():
+            raise ValueError('Audited TWOSIDES pair table contains non-numeric drug IDs.')
+        pair_table[['pair_a', 'pair_b']] = pair_table[['pair_a', 'pair_b']].astype(int)
+        if EXCLUDED_TWOSIDES_DRUG_IDS:
+            identity_ids = set(identity_map['drug_idx'])
+            unknown_excluded_ids = set(EXCLUDED_TWOSIDES_DRUG_IDS) - identity_ids
+            if unknown_excluded_ids:
+                raise ValueError(
+                    'Excluded TWOSIDES drug IDs are absent from the CID resolution map: '
+                    f'{sorted(unknown_excluded_ids)}.'
+                )
+            excluded_mask = (
+                pair_table['pair_a'].isin(EXCLUDED_TWOSIDES_DRUG_IDS)
+                | pair_table['pair_b'].isin(EXCLUDED_TWOSIDES_DRUG_IDS)
+            )
+            excluded_rows = int(excluded_mask.sum())
+            excluded_pairs = pair_table.loc[excluded_mask].drop_duplicates().copy()
+            excluded_pair_count = len(excluded_pairs)
+            if not excluded_pairs.empty:
+                excluded_pairs['excluded_drug_ids'] = ','.join(
+                    map(str, EXCLUDED_TWOSIDES_DRUG_IDS)
+                )
+                excluded_pairs.to_csv(
+                    audit_dir / 'identity_review_excluded_positive_pairs.csv', index=False
+                )
+            pair_table = pair_table.loc[~excluded_mask].copy()
+        missing_ids = set(pair_table['pair_a']).union(pair_table['pair_b']) - set(smiles_by_idx.index)
+        if missing_ids:
+            raise ValueError(
+                'Audited TWOSIDES pair table contains IDs absent from the CID resolution map: '
+                f'{sorted(missing_ids)[:10]}.'
+            )
+        positives = pd.DataFrame({
+            'source': pair_table['pair_a'].map(smiles_by_idx),
+            'target': pair_table['pair_b'].map(smiles_by_idx),
+        })
+    elif fixed_pair_splits_dir:
+        raise FileNotFoundError(
+            'Frozen pair splits require the audited TWOSIDES pair table and identity map: '
+            f'{audited_pair_table} and {identity_map_path}.'
+        )
+    elif TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file():
         interactions = pd.read_parquet(TWOSIDES_PARQUET)
         catalogue = pd.read_csv(TWOSIDES_DRUGS)
         required_interactions = {'drug_a', 'drug_b'}
@@ -2431,8 +2499,6 @@ def _prepare_positive_edges(
             )
         if catalogue['drug_idx'].duplicated().any():
             raise ValueError('Prepared TWOSIDES drug_idx values are not unique.')
-        excluded_rows = 0
-        excluded_pair_count = 0
         if EXCLUDED_TWOSIDES_DRUG_IDS:
             catalogue_ids = set(pd.to_numeric(catalogue['drug_idx'], errors='coerce').dropna().astype(int))
             unknown_excluded_ids = set(EXCLUDED_TWOSIDES_DRUG_IDS) - catalogue_ids
@@ -2502,8 +2568,14 @@ def _prepare_positive_edges(
     ).reset_index(drop=True)
     summary = {
         'excluded_twosides_drug_ids': list(EXCLUDED_TWOSIDES_DRUG_IDS),
-        'identity_review_excluded_event_rows': excluded_rows if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file() else 0,
-        'identity_review_excluded_unique_pairs': excluded_pair_count if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file() else 0,
+        'identity_review_excluded_event_rows': (
+            None if fixed_pair_splits_dir else excluded_rows
+        ),
+        'identity_review_excluded_unique_pairs': excluded_pair_count,
+        'positive_pair_source': (
+            str(audited_pair_table) if fixed_pair_splits_dir else
+            str(TWOSIDES_PARQUET if TWOSIDES_PARQUET.is_file() else TWOSIDES_EDGES)
+        ),
         'raw_unique_positive_pairs': len(positives),
         'excluded_positive_pairs': len(exclusions),
         'clean_positive_pairs': len(clean_positives),
