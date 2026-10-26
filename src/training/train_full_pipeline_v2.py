@@ -895,6 +895,7 @@ def evaluation_checkpoint_provenance(
         'negative_sampling_protocol': NEGATIVE_SAMPLING_PROTOCOL,
         'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
         'toxicity_loss_weight': TOXICITY_LOSS_WEIGHT,
+        'use_clinical_toxicity': USE_CLINICAL_TOXICITY,
         'use_pdb_encoder': USE_PDB_ENCODER,
         'use_gene_encoder': USE_SEVEN_SOURCE_FEATURES,
         'gene_feature_dim': SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else 50,
@@ -1026,6 +1027,15 @@ def validate_checkpoint_for_evaluation(
             'Checkpoint has no evaluation provenance. Re-evaluate only a checkpoint '
             'created by the current audited training pipeline.'
         )
+    provenance = dict(provenance)
+    # Checkpoints from the immediately preceding trainer version recorded this
+    # setting at the top level, but omitted it from evaluation_provenance. Accept
+    # that checkpoint only when its explicit value matches the current setting.
+    if (
+        'use_clinical_toxicity' not in provenance
+        and checkpoint.get('use_clinical_toxicity') == expected.get('use_clinical_toxicity')
+    ):
+        provenance['use_clinical_toxicity'] = checkpoint['use_clinical_toxicity']
     missing = sorted(set(expected).difference(provenance))
     if missing:
         raise ValueError(
@@ -3314,6 +3324,7 @@ def main() -> None:
         ),
     }
 
+    print('Finalization: writing training history and preparing checkpoint evaluation.', flush=True)
     # Preserve the real convergence record in this run's artifacts. A
     # checkpoint-only evaluation reads the existing history but never rewrites
     # the checkpoint to point at its newly created report copy.
@@ -3326,9 +3337,14 @@ def main() -> None:
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model_layer_summary = save_model_layer_summary(model, RUN_ARTIFACTS_DIR)
+    print(
+        f'Finalization: predicting reserved validation pairs '
+        f'({len(posthoc_validation_loader.dataset):,} rows).', flush=True
+    )
     validation_true, validation_raw_predictions = collect_predictions(
         model, posthoc_validation_loader
     )
+    print('Finalization: reserved validation predictions complete; fitting calibration.', flush=True)
     posthoc_partition = partition_validation_for_posthoc(
         validation_true, seed=SPLIT_SEED
     )
@@ -3433,7 +3449,11 @@ def main() -> None:
     results: dict[str, dict[str, Any]] = {}
     evaluation_data: dict[str, dict[str, Any]] = {}
     for name, loader in test_loaders.items():
+        print(
+            f'Evaluation: {name} starting ({len(loader.dataset):,} pairs).', flush=True
+        )
         labels, raw_predictions = collect_predictions(model, loader)
+        print(f'Evaluation: {name} predictions complete; calculating audits and metrics.', flush=True)
         calibrated_predictions = apply_calibrator(raw_predictions, calibration)
         metrics = calculate_metrics(
             labels,
@@ -3541,6 +3561,7 @@ def main() -> None:
             figure_dir,
             raw_predictions=raw_predictions,
         )
+        print(f'Evaluation: {name} complete.', flush=True)
     evaluation_metrics_summary = save_evaluation_metrics(results, RUN_ARTIFACTS_DIR)
     plot_benchmark_comparison(results, figure_dir)
 
