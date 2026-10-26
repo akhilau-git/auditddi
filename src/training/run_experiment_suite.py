@@ -473,9 +473,30 @@ def merge_study_plan(
 def collect_metric_rows(experiment_name: str, seed: int, run_dir: Path) -> list[dict[str, Any]]:
     manifest = json.loads((run_dir / 'run_manifest.json').read_text(encoding='utf-8'))
     split_signature = split_manifest_signature(manifest)
-    input_hash = manifest.get('input_sha256', {}).get('twosides_edges')
+    input_hashes = manifest.get('input_sha256', {})
+    # The classical runner calls this input ``twosides_edges`` while the graph
+    # runner hashes the prepared parquet or legacy edge table under its actual
+    # filename. Accept these documented names but keep the exact hash in output.
+    twosides_hash_keys = (
+        'twosides_edges',
+        'twosides_clean_parquet',
+        'legacy_twosides_edges',
+    )
+    input_hash_key = next(
+        (key for key in twosides_hash_keys if input_hashes.get(key)),
+        None,
+    )
+    input_hash = input_hashes.get(input_hash_key) if input_hash_key else None
     if not input_hash:
         raise ValueError('Run manifest is missing the TWOSIDES input SHA-256 hash.')
+    dataset = manifest.get('dataset', {})
+    configuration = manifest.get('configuration', {})
+    negative_label_meaning = (
+        dataset.get('negative_label_meaning')
+        or configuration.get('negative_label_meaning')
+    )
+    if not negative_label_meaning:
+        raise ValueError('Run manifest is missing the negative-label interpretation.')
     rows = []
     for split_name, metrics in manifest['results'].items():
         rows.append({
@@ -486,14 +507,15 @@ def collect_metric_rows(experiment_name: str, seed: int, run_dir: Path) -> list[
             'checkpoint_sha256': manifest['checkpoint']['sha256'],
             'repository_git_commit': manifest.get('repository_git_commit'),
             'twosides_input_sha256': input_hash,
+            'twosides_input_hash_key': input_hash_key,
             'split_manifest_signature': split_signature,
-            'negative_label_meaning': manifest['configuration']['negative_label_meaning'],
-            'negative_sampling_protocol': manifest['configuration'].get(
+            'negative_label_meaning': negative_label_meaning,
+            'negative_sampling_protocol': configuration.get(
                 'negative_sampling_protocol'
             ),
-            'model_architecture': manifest['configuration']['model_architecture'],
-            'use_toxicity_pair_features': manifest['configuration']['use_toxicity_pair_features'],
-            'toxicity_loss_weight': manifest['configuration']['toxicity_loss_weight'],
+            'model_architecture': configuration['model_architecture'],
+            'use_toxicity_pair_features': configuration['use_toxicity_pair_features'],
+            'toxicity_loss_weight': configuration['toxicity_loss_weight'],
             **{
                 key: metrics.get(key)
                 for key in (*METRIC_NAMES, 'brier_score_raw')
@@ -516,8 +538,16 @@ def validate_study_comparability(table: pd.DataFrame) -> None:
     if duplicated.any():
         raise ValueError('Experiment table contains duplicate experiment/seed/split rows.')
     for seed, seed_rows in table.groupby('seed'):
+        # Source-file hashes can use different names or represent different
+        # prepared forms across model families. The exact saved pair/label rows
+        # are compared by split_manifest_signature; retain each source hash for
+        # provenance, but do not mistake a filename difference for label drift.
+        if seed_rows['twosides_input_sha256'].isna().any():
+            raise ValueError(
+                f'Experiment comparisons for seed {seed} are missing a TWOSIDES source hash.'
+            )
         for column in (
-            'twosides_input_sha256', 'split_manifest_signature', 'negative_label_meaning',
+            'split_manifest_signature', 'negative_label_meaning',
             'negative_sampling_protocol', 'repository_git_commit',
         ):
             values = seed_rows[column].dropna().unique()

@@ -2992,6 +2992,15 @@ def main() -> None:
                 'separately; it requires a distinct training partition.'
             ),
         }
+    effective_negative_label_meaning = str(
+        dataset_summary.get('negative_label_meaning') or NEGATIVE_LABEL_MEANING
+    )
+    # A frozen split manifest is the authority for how its sampled negatives
+    # were constructed. Keep that meaning in the run manifest and metric table,
+    # including for architectures that have different non-frozen defaults.
+    manifest['configuration']['negative_label_meaning'] = effective_negative_label_meaning
+    manifest['dataset'] = dataset_summary
+    write_json(RUN_ARTIFACTS_DIR / 'run_manifest_initial.json', manifest)
     write_json(audit_dir / 'dataset_summary.json', dataset_summary)
     model_selection_validation, posthoc_validation, validation_role_partition = (
         partition_validation_for_model_selection(
@@ -3653,7 +3662,11 @@ def main() -> None:
             raw_predictions=raw_predictions,
         )
         print(f'Evaluation: {name} complete.', flush=True)
-    evaluation_metrics_summary = save_evaluation_metrics(results, RUN_ARTIFACTS_DIR)
+    evaluation_metrics_summary = save_evaluation_metrics(
+        results,
+        RUN_ARTIFACTS_DIR,
+        negative_label_meaning=effective_negative_label_meaning,
+    )
     print(
         'Evaluation: headline metrics saved to '
         f"{evaluation_metrics_summary['path']}", flush=True

@@ -422,6 +422,12 @@ def main() -> None:
             'negative_label_meaning': NEGATIVE_LABEL_MEANING,
         }
         splits = create_splits(full_dataset, drug_a_col='source', drug_b_col='target', seed=SPLIT_SEED)
+    effective_negative_label_meaning = str(
+        dataset_summary.get('negative_label_meaning') or NEGATIVE_LABEL_MEANING
+    )
+    manifest['configuration']['negative_label_meaning'] = effective_negative_label_meaning
+    manifest['dataset'] = dataset_summary
+    write_json(RUN_ARTIFACTS_DIR / 'run_manifest_initial.json', manifest)
     write_json(audit_dir / 'dataset_summary.json', dataset_summary)
     selection_split_key = MODEL_SELECTION_SPLIT
     model_selection_validation, posthoc_validation, validation_role_partition = (
