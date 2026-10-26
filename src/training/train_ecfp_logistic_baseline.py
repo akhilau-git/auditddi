@@ -37,6 +37,7 @@ from data_prep.splits import (
     create_split_aware_binary_splits,
     create_splits,
 )
+from data_prep.frozen_pair_splits import load_frozen_pair_splits
 from models.calibration import apply_calibrator, fit_platt_calibrator
 from training.train_full_pipeline_v2 import (
     _prepare_positive_edges,
@@ -371,7 +372,25 @@ def main() -> None:
     positives, input_quality_summary, all_clean_positives = _prepare_positive_edges(
         audit_dir, sampling_seed=SPLIT_SEED, return_all_clean_positives=True
     )
-    if NEGATIVE_SAMPLING_PROTOCOL == 'split_aware_standard_v1':
+    fixed_pair_splits_dir = get_auditddi_env('FIXED_PAIR_SPLITS_DIR')
+    if fixed_pair_splits_dir:
+        if NEGATIVE_SAMPLING_PROTOCOL != 'split_aware_standard_v1':
+            raise ValueError(
+                'Frozen pair splits require the split-aware negative-sampling protocol.'
+            )
+        splits, dataset_summary = load_frozen_pair_splits(
+            fixed_pair_splits_dir,
+            data_root=DRIVE_BASE,
+            expected_cohort=Path(fixed_pair_splits_dir).name,
+            expected_excluded_drug_ids=tuple(sorted({
+                int(value.strip())
+                for value in str(get_auditddi_env('EXCLUDED_TWOSIDES_DRUG_IDS', '')).split(',')
+                if value.strip()
+            })),
+            expected_split_seed=SPLIT_SEED,
+            expected_positive_pair_rows=len(positives),
+        )
+    elif NEGATIVE_SAMPLING_PROTOCOL == 'split_aware_standard_v1':
         splits, dataset_summary = create_split_aware_binary_splits(
             positives,
             known_reported_positive_pairs=all_clean_positives,

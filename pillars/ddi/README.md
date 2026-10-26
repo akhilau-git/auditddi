@@ -12,4 +12,4 @@ Predict reported TWOSIDES pair labels. DDInter remains separately tagged curated
 
 Edit locally in `D:\AuditDDI`, push the intended code revision to GitHub, then pull it into Colab. The code checkout and the Drive data folder are separate.
 
-The trainer currently rebuilds the pair splits with seed 42. Compare the resulting run manifest with the fixed split audit in Drive before treating metrics as final.
+Training loads the frozen audited split CSVs directly and validates cohort, exclusions, split seed, source-file hashes, row counts, and pair uniqueness against the saved split manifest.
