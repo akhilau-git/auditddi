@@ -1804,7 +1804,16 @@ def select_validation_threshold(labels: np.ndarray, predictions: np.ndarray) -> 
     if len(labels) == 0 or len(np.unique(labels)) < 2:
         raise ValueError('Validation split must contain both classes to select a threshold.')
     false_positive_rate, true_positive_rate, thresholds = roc_curve(labels, predictions)
-    return float(thresholds[np.argmax(true_positive_rate - false_positive_rate)])
+    # Recent scikit-learn versions prepend an ``inf`` sentinel to ROC
+    # thresholds.  If Youden's J ties at that first point, argmax can return
+    # infinity, which is not a valid probability cutoff for our metrics.
+    finite = np.isfinite(thresholds)
+    if not finite.any():
+        return 0.5
+    finite_thresholds = thresholds[finite]
+    finite_scores = (true_positive_rate - false_positive_rate)[finite]
+    selected = float(finite_thresholds[int(np.argmax(finite_scores))])
+    return float(np.clip(selected, 0.0, 1.0))
 
 
 def partition_validation_for_model_selection(
