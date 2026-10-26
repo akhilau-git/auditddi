@@ -16,6 +16,7 @@ The GitHub checkout and Drive project folder are different. Edit code in `D:\Aud
 - Colab notebook: `pillars/ddi/notebooks/01_DDI_prediction.ipynb`.
 - Data root: `Projects/auditddi` in Google Drive.
 - The first run is a strict-identity pilot with seed 42 and up to 200 epochs for the neural models. It compares Morgan logistic regression, edge-aware GATv2, and the seven-input DDI model.
+- The next comparison selects checkpoints and calibration settings from pair-disjoint S1-dev subsets. S1-test stays held out. The optional pair-level novelty audit is disabled for the primary run because it is much slower than headline metric calculation.
 - The seven-input model requires the prepared feature bundle and the ChEMBL-pretrained encoder checkpoint.
 - Training loads the frozen audited split CSVs directly and validates cohort, exclusions, split seed, source-file hashes, row counts, and pair uniqueness against the saved split manifest.
 - Results are written under `Projects/auditddi/results/pillars/DDI/`.

@@ -100,6 +100,13 @@ NEGATIVE_LABEL_MEANING = (
 MODEL_SELECTION_VALIDATION_FRACTION = float(
     get_auditddi_env('MODEL_SELECTION_VALIDATION_FRACTION', '0.5')
 )
+MODEL_SELECTION_SPLIT = str(
+    get_auditddi_env('MODEL_SELECTION_SPLIT', 'validation')
+).strip().lower()
+if MODEL_SELECTION_SPLIT not in {'validation', 's1_dev'}:
+    raise ValueError(
+        "AUDITDDI_MODEL_SELECTION_SPLIT must be 'validation' or 's1_dev'."
+    )
 EARLY_STOPPING_PATIENCE = _non_negative_int_from_environment(
     'ECFP_EARLY_STOPPING_PATIENCE', 6
 )
@@ -343,8 +350,11 @@ def baseline_manifest() -> dict[str, Any]:
             'early_stopping_patience': EARLY_STOPPING_PATIENCE,
             'early_stopping_min_epochs': EARLY_STOPPING_MIN_EPOCHS,
             'model_selection_validation_fraction': MODEL_SELECTION_VALIDATION_FRACTION,
+            'model_selection_split': MODEL_SELECTION_SPLIT,
             'validation_role_protocol': (
-                'stratified_disjoint_model_selection_then_posthoc_three_way_v1'
+                'stratified_disjoint_s1_dev_model_selection_then_s1_dev_posthoc_v1'
+                if MODEL_SELECTION_SPLIT == 's1_dev'
+                else 'stratified_disjoint_model_selection_then_posthoc_three_way_v1'
             ),
             'use_toxicity_pair_features': False,
             'toxicity_loss_weight': 0.0,
@@ -413,18 +423,31 @@ def main() -> None:
         }
         splits = create_splits(full_dataset, drug_a_col='source', drug_b_col='target', seed=SPLIT_SEED)
     write_json(audit_dir / 'dataset_summary.json', dataset_summary)
+    selection_split_key = MODEL_SELECTION_SPLIT
     model_selection_validation, posthoc_validation, validation_role_partition = (
         partition_validation_for_model_selection(
-            splits['validation'],
+            splits[selection_split_key],
             seed=SPLIT_SEED,
             selection_fraction=MODEL_SELECTION_VALIDATION_FRACTION,
         )
     )
-    # Keep the conventional key for the experiment-suite split signature. The
-    # additional table is reserved before training for all post-hoc decisions.
-    splits['validation'] = model_selection_validation
+    validation_role_partition['selection_source_split'] = selection_split_key
+    validation_role_partition['selection_protocol'] = MODEL_SELECTION_SPLIT
+    splits[selection_split_key] = model_selection_validation
     splits['posthoc_validation'] = posthoc_validation
+    if MODEL_SELECTION_SPLIT == 's1_dev':
+        print(
+            'Morgan logistic model selection uses the pair-disjoint S1-dev '
+            'selection subset; S1-test remains untouched.'
+        )
     split_manifest = save_split_manifests(splits, RUN_ARTIFACTS_DIR)
+    print(
+        f'Model selection: {MODEL_SELECTION_SPLIT} '
+        f'({len(splits[selection_split_key]):,} pair rows); '
+        f'post-hoc calibration/threshold source: posthoc_validation '
+        f'({len(splits["posthoc_validation"]):,} pair rows).',
+        flush=True,
+    )
 
     cache = MorganFingerprintCache()
     classifier = SGDClassifier(
@@ -462,7 +485,7 @@ def main() -> None:
             splits['transductive_train'], cache, coefficients, intercept
         )
         validation_labels, validation_predictions = collect_predictions(
-            splits['validation'], cache, coefficients, intercept
+            splits[selection_split_key], cache, coefficients, intercept
         )
         threshold = select_validation_threshold(validation_labels, validation_predictions)
         validation_metrics = calculate_metrics(validation_labels, validation_predictions, threshold)
@@ -475,7 +498,7 @@ def main() -> None:
         history['balanced_accuracy'].append(float(validation_metrics['balanced_accuracy']))
         print(
             f'Epoch {epoch}/{ECFP_EPOCHS}: loss={history["loss"][-1]:.4f}; '
-            f'selection AUROC={validation_metrics["auroc"]:.4f}; '
+            f'selection ({MODEL_SELECTION_SPLIT}) AUROC={validation_metrics["auroc"]:.4f}; '
             f'PR-AUC={validation_metrics["average_precision"]:.4f}; '
             f'MCC={validation_metrics["mcc"]:.4f}; '
             f'balanced accuracy={validation_metrics["balanced_accuracy"]:.4f}; '
@@ -494,7 +517,7 @@ def main() -> None:
                 {
                     'epoch': epoch,
                     'validation_auroc': best_auroc,
-                    'model_selection_split': 'validation',
+                    'model_selection_split': MODEL_SELECTION_SPLIT,
                     'status': 'uncalibrated',
                 },
                 CHECKPOINT_PATH,
@@ -565,7 +588,7 @@ def main() -> None:
             'threshold': frozen_threshold,
             'calibration': calibration,
             'model_architecture': 'ecfp_sgd_logistic_v1',
-            'model_selection_split': 'validation',
+            'model_selection_split': MODEL_SELECTION_SPLIT,
             'posthoc_validation_split': 'posthoc_validation',
             'validation_role_partition': validation_role_partition,
             'posthoc_validation_partition': {
@@ -599,10 +622,13 @@ def main() -> None:
     plot_training_curves(history, figure_dir)
     history_summary = save_training_history(history, RUN_ARTIFACTS_DIR)
     results: dict[str, dict[str, Any]] = {}
-    for name, split_key in (
-        ('Transductive', 'transductive_test'), ('S1', 's1_test'), ('S2', 's2_test'),
-        ('S1-dev', 's1_dev'), ('S2-dev', 's2_dev')
-    ):
+    evaluation_splits = [
+        ('Transductive', 'transductive_test'), ('S1', 's1_test'),
+        ('S2', 's2_test'), ('S2-dev', 's2_dev'),
+    ]
+    if MODEL_SELECTION_SPLIT != 's1_dev':
+        evaluation_splits.insert(3, ('S1-dev', 's1_dev'))
+    for name, split_key in evaluation_splits:
         labels, raw_predictions = collect_predictions(
             splits[split_key], cache, best_coefficients, best_intercept
         )
@@ -652,7 +678,7 @@ def main() -> None:
             'stopped_early': stopped_early,
             'completed_epochs': len(history['epoch']),
             'best_epoch': best_epoch,
-            'model_selection_split': 'validation',
+            'model_selection_split': MODEL_SELECTION_SPLIT,
             'posthoc_validation_split': 'posthoc_validation',
             'posthoc_reserved_before_training': True,
         },

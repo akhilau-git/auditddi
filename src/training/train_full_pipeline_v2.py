@@ -342,6 +342,18 @@ USE_CLINICAL_TOXICITY = False
 EVALUATION_PROTOCOL = os.environ.get('AUDITDDI_EVALUATION_PROTOCOL', 'standard').strip().lower()
 if EVALUATION_PROTOCOL not in {'standard', 'scaffold_disjoint'}:
     raise ValueError("AUDITDDI_EVALUATION_PROTOCOL must be 'standard' or 'scaffold_disjoint'.")
+MODEL_SELECTION_SPLIT = str(
+    get_auditddi_env('MODEL_SELECTION_SPLIT', 'validation')
+).strip().lower()
+if MODEL_SELECTION_SPLIT not in {'validation', 's1_dev'}:
+    raise ValueError(
+        "AUDITDDI_MODEL_SELECTION_SPLIT must be 'validation' or 's1_dev'."
+    )
+if EVALUATION_PROTOCOL == 'scaffold_disjoint' and MODEL_SELECTION_SPLIT != 'validation':
+    raise ValueError(
+        "AUDITDDI_MODEL_SELECTION_SPLIT='s1_dev' applies only to the standard "
+        'transductive/S1/S2 frozen-split protocol.'
+    )
 BOOTSTRAP_RESAMPLES = _non_negative_int_from_environment('AUDITDDI_BOOTSTRAP_RESAMPLES', 1000)
 ERROR_ANALYSIS_MAX_ROWS = _positive_int_from_environment('AUDITDDI_ERROR_ANALYSIS_MAX_ROWS', 100)
 
@@ -418,6 +430,9 @@ if EVALUATE_ONLY and not CHECKPOINT_PATH_WAS_EXPLICITLY_CONFIGURED:
     )
 RUN_CANDIDATE_EXPLANATIONS = _boolean_from_environment(
     'AUDITDDI_RUN_CANDIDATE_EXPLANATIONS', False
+)
+RUN_PAIR_NOVELTY_AUDIT = _boolean_from_environment(
+    'AUDITDDI_RUN_PAIR_NOVELTY_AUDIT', False
 )
 EXPLANATION_SAMPLES_PER_SPLIT = _positive_int_from_environment(
     'AUDITDDI_EXPLANATION_SAMPLES_PER_SPLIT', 4
@@ -723,8 +738,11 @@ def build_run_manifest() -> dict[str, Any]:
             'early_stopping_patience': EARLY_STOPPING_PATIENCE,
             'early_stopping_min_epochs': EARLY_STOPPING_MIN_EPOCHS,
             'model_selection_validation_fraction': MODEL_SELECTION_VALIDATION_FRACTION,
+            'model_selection_split': MODEL_SELECTION_SPLIT,
             'validation_role_protocol': (
-                'stratified_disjoint_model_selection_then_posthoc_three_way_v1'
+                'stratified_disjoint_s1_dev_model_selection_then_s1_dev_posthoc_v1'
+                if MODEL_SELECTION_SPLIT == 's1_dev'
+                else 'stratified_disjoint_model_selection_then_posthoc_three_way_v1'
             ),
             'use_chemberta': USE_CHEMBERTA,
             'model_architecture': MODEL_ARCHITECTURE,
@@ -784,6 +802,10 @@ def build_run_manifest() -> dict[str, Any]:
                 'samples_per_split': EXPLANATION_SAMPLES_PER_SPLIT,
                 'top_k': EXPLANATION_TOP_K,
                 'uses_raw_model_probabilities': True,
+            },
+            'pair_level_novelty_audit': {
+                'enabled': RUN_PAIR_NOVELTY_AUDIT,
+                'method': 'pair_level_ecfp_tanimoto_v1',
             },
             'uncertainty': {
                 'conformal_method': 'split_conformal_binary_v1',
@@ -891,6 +913,7 @@ def evaluation_checkpoint_provenance(
         'data_cap': DATA_CAP,
         'model_seed': MODEL_SEED,
         'split_seed': SPLIT_SEED,
+        'model_selection_split': MODEL_SELECTION_SPLIT,
         'negative_sampling_strategy': NEGATIVE_SAMPLING_STRATEGY,
         'negative_sampling_protocol': NEGATIVE_SAMPLING_PROTOCOL,
         'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
@@ -929,6 +952,16 @@ def load_warm_start_checkpoint(
         raise ValueError('Warm-start checkpoint is missing model weights or provenance.')
 
     expected = evaluation_checkpoint_provenance(manifest, split_manifest)
+    if 'model_selection_split' not in provenance:
+        checkpoint_selection_split = checkpoint.get('model_selection_split_key')
+        legacy_selection_description = str(checkpoint.get('model_selection_split', ''))
+        if checkpoint_selection_split == expected.get('model_selection_split'):
+            provenance['model_selection_split'] = checkpoint_selection_split
+        elif (
+            expected.get('model_selection_split') == 'validation'
+            and legacy_selection_description.startswith('validation:')
+        ):
+            provenance['model_selection_split'] = 'validation'
     old_hashes = provenance.get('input_sha256')
     new_hashes = expected.get('input_sha256')
     if not isinstance(old_hashes, dict) or not isinstance(new_hashes, dict):
@@ -1036,6 +1069,16 @@ def validate_checkpoint_for_evaluation(
         and checkpoint.get('use_clinical_toxicity') == expected.get('use_clinical_toxicity')
     ):
         provenance['use_clinical_toxicity'] = checkpoint['use_clinical_toxicity']
+    if 'model_selection_split' not in provenance:
+        checkpoint_selection_split = checkpoint.get('model_selection_split_key')
+        legacy_selection_description = str(checkpoint.get('model_selection_split', ''))
+        if checkpoint_selection_split == expected.get('model_selection_split'):
+            provenance['model_selection_split'] = checkpoint_selection_split
+        elif (
+            expected.get('model_selection_split') == 'validation'
+            and legacy_selection_description.startswith('validation:')
+        ):
+            provenance['model_selection_split'] = 'validation'
     missing = sorted(set(expected).difference(provenance))
     if missing:
         raise ValueError(
@@ -2928,8 +2971,12 @@ def main() -> None:
             'S1-dev': 's1_dev',
             'S2-dev': 's2_dev',
         }
+        if MODEL_SELECTION_SPLIT == 's1_dev':
+            validation_split_key = 's1_dev'
+            test_split_keys.pop('S1-dev')
         evaluation_protocol_summary: dict[str, Any] = {
             'name': 'standard_transductive_s1_s2',
+            'model_selection_split': MODEL_SELECTION_SPLIT,
             'interpretation_warning': (
                 'Standard results include a transductive split and drug-identity '
                 'cold-start S1/S2 partitions. Run scaffold-disjoint evaluation '
@@ -2941,10 +2988,13 @@ def main() -> None:
         partition_validation_for_model_selection(
             splits[validation_split_key],
             seed=SPLIT_SEED,
+            selection_fraction=MODEL_SELECTION_VALIDATION_FRACTION,
         )
     )
-    # Retain the conventional ``validation`` key for compatibility with the
-    # experiment suite. It now means model-selection validation only.
+    validation_role_partition['selection_source_split'] = validation_split_key
+    validation_role_partition['selection_protocol'] = MODEL_SELECTION_SPLIT
+    # In cold-start mode, S1-dev is divided deterministically into pair-disjoint
+    # model-selection and post-hoc calibration/threshold/conformal subsets.
     splits[validation_split_key] = model_selection_validation
     splits[posthoc_validation_split_key] = posthoc_validation
     evaluation_protocol_summary['validation_role_partition'] = validation_role_partition
@@ -3026,6 +3076,13 @@ def main() -> None:
             'Graph validation changed between the pre-split audit and dataset construction: '
             f'{unexpected_skips}. Review the input audit before training.'
         )
+    print(
+        f'Model selection: {MODEL_SELECTION_SPLIT} '
+        f'({len(validation_loader.dataset):,} pair rows); '
+        f'post-hoc calibration/threshold source: {posthoc_validation_split_key} '
+        f'({len(posthoc_validation_loader.dataset):,} pair rows).',
+        flush=True,
+    )
     validation_labels = np.asarray([record['label'] for record in cast(AuditDDIDataset, validation_loader.dataset).metadata])
     if len(validation_labels) == 0 or len(np.unique(validation_labels)) < 2:
         raise ValueError(
@@ -3221,7 +3278,7 @@ def main() -> None:
             print(
                 f'Epoch {epoch}/{EPOCHS}: loss={loss:.4f}; '
                 f'val_loss={validation_loss:.4f}; '
-                f"selection AUROC={validation_metrics['auroc']:.4f}; "
+                f"selection ({MODEL_SELECTION_SPLIT}) AUROC={validation_metrics['auroc']:.4f}; "
                 f"PR-AUC={validation_metrics['average_precision']:.4f}; "
                 f"MCC={validation_metrics['mcc']:.4f}; "
                 f"balanced accuracy={validation_metrics['balanced_accuracy']:.4f}; "
@@ -3289,9 +3346,10 @@ def main() -> None:
                         'auroc': float(best_auroc),
                         'model_selection_metric': 'AUROC',
                         'model_selection_split': (
-                            f'{validation_split_key}: disjoint model-selection validation '
+                            f'{validation_split_key}: disjoint model-selection subset '
                             'used for early stopping'
                         ),
+                        'model_selection_split_key': MODEL_SELECTION_SPLIT,
                         'epoch': epoch,
                         'data_cap': DATA_CAP,
                         'seed': MODEL_SEED,
@@ -3317,7 +3375,7 @@ def main() -> None:
             if should_stop_early(epoch, epochs_without_improvement):
                 stopped_early = True
                 print(
-                    'Early stopping: no validation AUROC improvement for '
+                    f'Early stopping: no {MODEL_SELECTION_SPLIT} AUROC improvement for '
                     f'{epochs_without_improvement} epochs after epoch {EARLY_STOPPING_MIN_EPOCHS}. '
                     f'Keeping best checkpoint from epoch {best_epoch}.'
                 )
@@ -3587,6 +3645,10 @@ def main() -> None:
         )
         print(f'Evaluation: {name} complete.', flush=True)
     evaluation_metrics_summary = save_evaluation_metrics(results, RUN_ARTIFACTS_DIR)
+    print(
+        'Evaluation: headline metrics saved to '
+        f"{evaluation_metrics_summary['path']}", flush=True
+    )
     plot_benchmark_comparison(results, figure_dir)
 
     # =========================================================================
@@ -3595,41 +3657,71 @@ def main() -> None:
     novelty_audit_dir = RUN_ARTIFACTS_DIR / 'novelty_audits'
     novelty_audit_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Pair-level applicability domain ──────────────────────────────────────
-    training_pairs_source = [
-        metadata['source']
-        for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
-    ]
-    training_pairs_target = [
-        metadata['target']
-        for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
-    ]
-    pair_ood = PairApplicabilityDomain(
-        minimum_similarity=APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY
-    )
-    pair_ood_fit_summary = pair_ood.fit(training_pairs_source, training_pairs_target)
-    pair_ood_results: dict[str, Any] = {}
-    for split_name, split_data in evaluation_data.items():
-        try:
-            pair_scores = pair_ood.score_pairs(
-                split_data['source_smiles'], split_data['target_smiles']
+    # 1. Pair-level applicability domain. This compares every held-out pair
+    # against every training-pair fingerprint and can dominate evaluation time.
+    if RUN_PAIR_NOVELTY_AUDIT:
+        print('Post-evaluation: starting pair-level novelty audit.', flush=True)
+        training_pairs_source = [
+            metadata['source']
+            for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
+        ]
+        training_pairs_target = [
+            metadata['target']
+            for metadata in cast(AuditDDIDataset, train_loader.dataset).metadata
+        ]
+        pair_ood = PairApplicabilityDomain(
+            minimum_similarity=APPLICABILITY_DOMAIN_MINIMUM_SIMILARITY
+        )
+        pair_ood_fit_summary = pair_ood.fit(training_pairs_source, training_pairs_target)
+        pair_ood_results: dict[str, Any] = {}
+        for split_name, split_data in evaluation_data.items():
+            print(
+                f'Post-evaluation: pair-level novelty audit for {split_name} '
+                f"({len(split_data['labels']):,} pairs).", flush=True
             )
-            pair_ood_summary = pair_ood.summarize(pair_scores)
-            pair_ood_results[split_name] = pair_ood_summary
-            write_json(
-                novelty_audit_dir / f'pair_ood_{split_name.lower().replace("-", "_")}.json',
-                pair_ood_summary,
+            try:
+                pair_scores = pair_ood.score_pairs(
+                    split_data['source_smiles'], split_data['target_smiles']
+                )
+                pair_ood_summary = pair_ood.summarize(pair_scores)
+                pair_ood_results[split_name] = pair_ood_summary
+                write_json(
+                    novelty_audit_dir / f'pair_ood_{split_name.lower().replace("-", "_")}.json',
+                    pair_ood_summary,
+                )
+            except Exception as pair_ood_error:
+                pair_ood_results[split_name] = {'error': str(pair_ood_error)}
+            print(
+                f'Post-evaluation: pair-level novelty audit for {split_name} complete.',
+                flush=True,
             )
-        except Exception as pair_ood_error:
-            pair_ood_results[split_name] = {'error': str(pair_ood_error)}
-    write_json(
-        novelty_audit_dir / 'pair_ood_fit_summary.json',
-        {**pair_ood_fit_summary, 'per_split': pair_ood_results},
-    )
+        write_json(
+            novelty_audit_dir / 'pair_ood_fit_summary.json',
+            {**pair_ood_fit_summary, 'per_split': pair_ood_results},
+        )
+    else:
+        write_json(
+            novelty_audit_dir / 'pair_ood_fit_summary.json',
+            {
+                'status': 'skipped_by_configuration',
+                'reason': (
+                    'Pair-level Tanimoto novelty audit was disabled to complete '
+                    'the primary model evaluation efficiently.'
+                ),
+            },
+        )
+        print(
+            'Post-evaluation: pair-level novelty audit skipped by configuration; '
+            'headline metrics are unaffected.', flush=True
+        )
 
     # 2. Degradation audit with bootstrap confidence intervals ─────────────────
     degradation = DegradationAudit(n_bootstrap=BOOTSTRAP_RESAMPLES, seed=SPLIT_SEED)
     for split_name, split_data in evaluation_data.items():
+        print(
+            f'Post-evaluation: degradation bootstrap for {split_name} '
+            f'({BOOTSTRAP_RESAMPLES} resamples).', flush=True
+        )
         try:
             deg_result = degradation.run(
                 labels=split_data['labels'],
@@ -3648,6 +3740,10 @@ def main() -> None:
                 / f'degradation_{split_name.lower().replace("-", "_")}_error.json',
                 {'error': str(deg_error), 'split': split_name},
             )
+        print(
+            f'Post-evaluation: degradation bootstrap for {split_name} complete.',
+            flush=True,
+        )
 
     # 3. Reliability diagrams (calibration curves) per split ──────────────────
     reliability_input = {
@@ -3661,12 +3757,14 @@ def main() -> None:
         for sn, sd in evaluation_data.items()
     }
     try:
+        print('Post-evaluation: creating reliability diagram.', flush=True)
         reliability_stats = plot_reliability_diagram(
             split_results=reliability_input,
             output_path=novelty_audit_dir / 'reliability_diagram',
             n_bins=10,
         )
         write_json(novelty_audit_dir / 'reliability_stats.json', reliability_stats)
+        print('Post-evaluation: reliability diagram complete.', flush=True)
     except Exception as rel_error:
         write_json(
             novelty_audit_dir / 'reliability_error.json',
@@ -3675,6 +3773,7 @@ def main() -> None:
     # =========================================================================
 
     write_json(RUN_ARTIFACTS_DIR / 'results_summary.json', results)
+    print('Post-evaluation: writing final run manifest and report artifacts.', flush=True)
     explanation_summary = generate_candidate_explanation_artifact(
         model, evaluation_data, RUN_ARTIFACTS_DIR / 'explanations'
     )
@@ -3727,7 +3826,8 @@ def main() -> None:
                 else RESUME_AFTER_EPOCH if warm_start_info is not None else 0
             ),
             'best_epoch': checkpoint['epoch'],
-            'model_selection_split': validation_split_key,
+            'model_selection_split': MODEL_SELECTION_SPLIT,
+            'model_selection_split_artifact_key': validation_split_key,
             'posthoc_validation_split': posthoc_validation_split_key,
             'posthoc_reserved_before_training': True,
         },
