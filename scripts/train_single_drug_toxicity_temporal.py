@@ -373,23 +373,34 @@ def main() -> None:
             "n_reports": n_test.astype(int), "is_new_structure": test["is_new_structure"],
         }))
 
-    tree = ExtraTreesRegressor(
-        n_estimators=500, min_samples_leaf=5, max_features=0.8,
-        random_state=args.seeds[0], n_jobs=-1,
-    )
-    tree.fit(x_train, y_train)
-    tree_pred = np.clip(tree.predict(x_test), 0.0, 1.0)
+    tree_predictions: list[np.ndarray] = []
+    for seed in args.seeds:
+        print(f"Fitting Morgan ExtraTrees for seed {seed}...", flush=True)
+        tree = ExtraTreesRegressor(
+            n_estimators=500, min_samples_leaf=5, max_features=0.8,
+            random_state=seed, n_jobs=-1,
+        )
+        tree.fit(x_train, y_train)
+        tree_pred = np.clip(tree.predict(x_test), 0.0, 1.0)
+        tree_predictions.append(tree_pred)
+        metrics_rows.append({
+            "seed": seed, "model": "ecfp6_extratrees", "cohort": "all_2026h1_test",
+            **_metrics(y_test, tree_pred, n_test),
+        })
+        joblib.dump(tree, args.output_dir / f"ecfp6_extratrees_seed_{seed}.joblib")
+        prediction_rows.append(pd.DataFrame({
+            "seed": seed, "model": "ecfp6_extratrees",
+            "canonical_smiles": test["canonical_smiles"], "y_true": y_test,
+            "y_pred": tree_pred, "serious_outcome_reports": k_test,
+            "n_reports": n_test.astype(int), "is_new_structure": test["is_new_structure"],
+        }))
+
+    tree_ensemble_pred = np.mean(np.stack(tree_predictions), axis=0)
     metrics_rows.append({
-        "seed": args.seeds[0], "model": "ecfp6_extratrees", "cohort": "all_2026h1_test",
-        **_metrics(y_test, tree_pred, n_test),
+        "seed": -1, "model": "ecfp6_extratrees_seed_mean",
+        "cohort": "all_2026h1_test",
+        **_metrics(y_test, tree_ensemble_pred, n_test),
     })
-    joblib.dump(tree, args.output_dir / "ecfp6_extratrees.joblib")
-    prediction_rows.append(pd.DataFrame({
-        "seed": args.seeds[0], "model": "ecfp6_extratrees",
-        "canonical_smiles": test["canonical_smiles"], "y_true": y_test,
-        "y_pred": tree_pred, "serious_outcome_reports": k_test,
-        "n_reports": n_test.astype(int), "is_new_structure": test["is_new_structure"],
-    }))
 
     groups = train["scaffold"].to_numpy()
     splitter = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=args.seeds[0])
@@ -456,7 +467,7 @@ def main() -> None:
         for name, pred in [
             ("train_mean_per_drug", baseline_predictions["train_mean_per_drug"]),
             ("train_pooled_report_fraction", baseline_predictions["train_pooled_report_fraction"]),
-            ("ecfp6_extratrees", tree_pred),
+            ("ecfp6_extratrees_seed_mean", tree_ensemble_pred),
             ("ecfp6_beta_binomial_mlp_seed_mean", mlp_ensemble_pred),
         ]:
             metrics_rows.append({
@@ -466,6 +477,23 @@ def main() -> None:
 
     metrics = pd.DataFrame(metrics_rows)
     metrics.to_csv(args.output_dir / "temporal_metrics.csv", index=False)
+    repeat_metrics = metrics.loc[
+        metrics["seed"].isin(args.seeds)
+        & metrics["model"].isin(["ecfp6_extratrees", "ecfp6_beta_binomial_mlp"])
+        & metrics["cohort"].eq("all_2026h1_test")
+    ]
+    summary_columns = [
+        column for column in (
+            "mae", "rmse", "r2", "spearman",
+            "sqrt_report_weighted_mae", "beta_binomial_nll_per_drug",
+        ) if column in repeat_metrics.columns
+    ]
+    if not repeat_metrics.empty:
+        seed_summary = repeat_metrics.groupby("model")[summary_columns].agg(["mean", "std"])
+        seed_summary.columns = [f"{metric}_{stat}" for metric, stat in seed_summary.columns]
+        seed_summary.reset_index().to_csv(
+            args.output_dir / "temporal_seed_summary.csv", index=False
+        )
     pd.concat(prediction_rows, ignore_index=True).to_csv(
         args.output_dir / "temporal_predictions.csv", index=False
     )
