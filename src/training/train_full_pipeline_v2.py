@@ -25,6 +25,7 @@ from typing import Any, cast, Literal, overload
 import numpy as np
 import pandas as pd
 import torch
+from torch import nn
 try:
     import torch.serialization
     if hasattr(torch.serialization, 'add_safe_globals'):
@@ -99,7 +100,7 @@ from data_prep.molecular_motifs import (
     MOTIF_SCHEMA_SMARTS_COUNTS_V1,
     motif_metadata,
 )
-from data_prep.pubchem_bridge import canonicalize, resolve_toxicity_bridge
+from data_prep.pubchem_bridge import canonicalize
 from data_prep.splits import (
     build_binary_pair_dataset,
     create_split_aware_binary_splits,
@@ -113,10 +114,17 @@ from models.ddi_model import (
     MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
     MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
     MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
+    MODEL_ARCHITECTURE_MULTIMODAL,
+    MODEL_ARCHITECTURE_SEVEN_BRANCH,
     PxDDIModel,
     AuditDDIModel,
 )
 from models.neighbor_memory import AuditableNeighborMemory
+from models.seven_branch_ddi import (
+    SEVEN_BRANCH_ARCHITECTURE,
+    SEVEN_BRANCH_NAMES,
+    SevenBranchDDIModel,
+)
 from models.calibration import (
     apply_calibrator,
     expected_calibration_error,
@@ -216,6 +224,21 @@ MODEL_SEED = _positive_int_from_environment('AUDITDDI_MODEL_SEED', SEED)
 SPLIT_SEED = _positive_int_from_environment('AUDITDDI_SPLIT_SEED', SEED)
 DATA_CAP = _positive_int_from_environment('AUDITDDI_DATA_CAP', 200000)
 EPOCHS = _positive_int_from_environment('AUDITDDI_EPOCHS', 200)
+RESUME_CHECKPOINT_PATH = get_auditddi_env('RESUME_CHECKPOINT_PATH')
+RESUME_HISTORY_PATH = get_auditddi_env('RESUME_HISTORY_PATH')
+RESUME_AFTER_EPOCH = _non_negative_int_from_environment(
+    'AUDITDDI_RESUME_AFTER_EPOCH', 0
+)
+if RESUME_CHECKPOINT_PATH and RESUME_AFTER_EPOCH <= 0:
+    raise ValueError(
+        'AUDITDDI_RESUME_AFTER_EPOCH must be set to the last completed epoch '
+        'when AUDITDDI_RESUME_CHECKPOINT_PATH is configured.'
+    )
+if RESUME_CHECKPOINT_PATH and RESUME_AFTER_EPOCH >= EPOCHS:
+    raise ValueError(
+        'AUDITDDI_RESUME_AFTER_EPOCH must be lower than AUDITDDI_EPOCHS so '
+        'there are epochs left to run.'
+    )
 HIDDEN_CHANNELS = _positive_int_from_environment('AUDITDDI_HIDDEN_CHANNELS', 128)
 BATCH_SIZE = _positive_int_from_environment('AUDITDDI_BATCH_SIZE', 128)
 EARLY_STOPPING_PATIENCE = _non_negative_int_from_environment(
@@ -243,6 +266,16 @@ NEGATIVE_LABEL_MEANING = (
     if NEGATIVE_SAMPLING_PROTOCOL == 'split_aware_standard_v1'
     else f'unreported_twosides_sampled_{NEGATIVE_SAMPLING_STRATEGY}'
 )
+# Optional source drug indices to omit after identity review. This is used for
+# predeclared sensitivity cohorts and recorded in every run manifest.
+_excluded_ids_value = str(get_auditddi_env('EXCLUDED_TWOSIDES_DRUG_IDS', '')).strip()
+EXCLUDED_TWOSIDES_DRUG_IDS = tuple(sorted({
+    int(value.strip())
+    for value in _excluded_ids_value.split(',')
+    if value.strip()
+}))
+if any(value < 0 for value in EXCLUDED_TWOSIDES_DRUG_IDS):
+    raise ValueError('AUDITDDI_EXCLUDED_TWOSIDES_DRUG_IDS must contain non-negative integer IDs.')
 USE_CHEMBERTA = False
 MODEL_ARCHITECTURE = os.environ.get(
     'AUDITDDI_MODEL_ARCHITECTURE', MODEL_ARCHITECTURE_EDGE_AWARE
@@ -254,6 +287,8 @@ if MODEL_ARCHITECTURE not in {
     MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
     MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
     MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
+    MODEL_ARCHITECTURE_MULTIMODAL,
+    MODEL_ARCHITECTURE_SEVEN_BRANCH,
 }:
     raise ValueError(f'Unsupported AUDITDDI_MODEL_ARCHITECTURE: {MODEL_ARCHITECTURE}.')
 USES_EDGE_FEATURES = MODEL_ARCHITECTURE in {
@@ -262,13 +297,27 @@ USES_EDGE_FEATURES = MODEL_ARCHITECTURE in {
     MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE,
     MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
     MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
+    MODEL_ARCHITECTURE_MULTIMODAL,
+    MODEL_ARCHITECTURE_SEVEN_BRANCH,
 }
 USE_MOTIF_FEATURES = MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_MOTIF_EDGE_AWARE
 USE_FINGERPRINT_FEATURES = MODEL_ARCHITECTURE in {
     MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
     MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
+    MODEL_ARCHITECTURE_MULTIMODAL,
+    MODEL_ARCHITECTURE_SEVEN_BRANCH,
 }
 USE_NEIGHBOR_MEMORY = MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_AUDITDDI_MEMORY
+USE_SEVEN_SOURCE_FEATURES = MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_MULTIMODAL
+USE_SEVEN_BRANCH_MODEL = MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_SEVEN_BRANCH
+SEVEN_SOURCE_FEATURE_DIM = 51
+SEVEN_BRANCH_FEATURE_BUNDLE = Path(os.environ.get(
+    'AUDITDDI_SEVEN_BRANCH_FEATURE_BUNDLE',
+    str(DRIVE_BASE / 'processed' / 'auditddi_v3' / 'seven_branch_features.npz'),
+))
+SEVEN_BRANCH_DIMENSIONS: dict[str, int] = {}
+if USE_SEVEN_SOURCE_FEATURES or USE_SEVEN_BRANCH_MODEL:
+    NEGATIVE_LABEL_MEANING = 'not_reported_in_twosides_or_matched_ddinter_sampled_unknown'
 USE_CROSS_DRUG_ATTENTION = (
     MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE
 )
@@ -285,12 +334,10 @@ INPUT_FEATURE_DIM = (
     if FEATURE_SCHEMA == FEATURE_SCHEMA_RICH
     else LEGACY_NUM_ATOM_FEATURES
 )
-USE_TOXICITY_PAIR_FEATURES = _boolean_from_environment(
-    'AUDITDDI_USE_TOXICITY_PAIR_FEATURES', False
-)
-TOXICITY_LOSS_WEIGHT = float(os.environ.get('AUDITDDI_TOXICITY_LOSS_WEIGHT', '0.0'))
-if TOXICITY_LOSS_WEIGHT < 0:
-    raise ValueError('AUDITDDI_TOXICITY_LOSS_WEIGHT must be non-negative.')
+USE_TOXICITY_PAIR_FEATURES = False
+TOXICITY_LOSS_WEIGHT = 0.0
+USE_PDB_ENCODER = MODEL_ARCHITECTURE == MODEL_ARCHITECTURE_MULTIMODAL
+USE_CLINICAL_TOXICITY = False
 EVALUATION_PROTOCOL = os.environ.get('AUDITDDI_EVALUATION_PROTOCOL', 'standard').strip().lower()
 if EVALUATION_PROTOCOL not in {'standard', 'scaffold_disjoint'}:
     raise ValueError("AUDITDDI_EVALUATION_PROTOCOL must be 'standard' or 'scaffold_disjoint'.")
@@ -301,11 +348,28 @@ ERROR_ANALYSIS_MAX_ROWS = _positive_int_from_environment('AUDITDDI_ERROR_ANALYSI
 # ``main`` raises the saved resolver error before training or evaluation can
 # read either placeholder path.
 if DATA_BASE_RESOLUTION_ERROR is None:
+    # Prefer the versioned, audited Drive preparation produced during the
+    # user's current workflow. The old raw-folder edge CSV remains a fallback
+    # for earlier checkouts, but must not silently override the audited table.
+    PREPARED_TWOSIDES = DRIVE_BASE / 'processed' / 'twosides_v1'
+    TWOSIDES_PARQUET = PREPARED_TWOSIDES / 'twosides_clean.parquet'
+    TWOSIDES_DRUGS = PREPARED_TWOSIDES / 'drugs_clean.csv'
+    SOURCE_BUNDLE = DRIVE_BASE / 'processed' / 'auditddi_v2'
+    SOURCE_FEATURE_MATRIX = SOURCE_BUNDLE / 'source_feature_matrix.npz'
+    SOURCE_BUNDLE_MANIFEST = SOURCE_BUNDLE / 'source_bundle_manifest.json'
+    SOURCE_AUDIT = DRIVE_BASE / 'processed' / 'auditddi_v1'
+    DDINTER_MATCH_AUDIT = SOURCE_AUDIT / 'ddinter_pubchem_match_audit.csv'
     TWOSIDES_EDGES = resolve_dataset_subpath(DRIVE_BASE, 'twosides', 'drug_drug_edges.csv')
-    TOXICITY_BRIDGE = resolve_dataset_subpath(DRIVE_BASE, 'checkpoints', 'toxicity_smiles_bridge.csv')
 else:
+    PREPARED_TWOSIDES = DRIVE_BASE / 'processed' / 'twosides_v1'
+    TWOSIDES_PARQUET = PREPARED_TWOSIDES / 'twosides_clean.parquet'
+    TWOSIDES_DRUGS = PREPARED_TWOSIDES / 'drugs_clean.csv'
+    SOURCE_BUNDLE = DRIVE_BASE / 'processed' / 'auditddi_v2'
+    SOURCE_FEATURE_MATRIX = SOURCE_BUNDLE / 'source_feature_matrix.npz'
+    SOURCE_BUNDLE_MANIFEST = SOURCE_BUNDLE / 'source_bundle_manifest.json'
+    SOURCE_AUDIT = DRIVE_BASE / 'processed' / 'auditddi_v1'
+    DDINTER_MATCH_AUDIT = SOURCE_AUDIT / 'ddinter_pubchem_match_audit.csv'
     TWOSIDES_EDGES = DRIVE_BASE / 'twosides' / 'drug_drug_edges.csv'
-    TOXICITY_BRIDGE = DRIVE_BASE / 'checkpoints' / 'toxicity_smiles_bridge.csv'
 RESULTS_BASE = resolve_results_base()
 DEFAULT_CHECKPOINT_PATH = (
     RESULTS_BASE / 'checkpoints' / 'auditddi_model.pt'
@@ -313,6 +377,8 @@ DEFAULT_CHECKPOINT_PATH = (
     else RESULTS_BASE / 'checkpoints' / 'candidates' / (
         'auditddi_memory_fusion_candidate.pt'
         if USE_NEIGHBOR_MEMORY
+        else 'auditddi_seven_branch_candidate.pt'
+        if USE_SEVEN_BRANCH_MODEL
         else 'auditddi_graph_fp_fusion_candidate.pt'
         if USE_FINGERPRINT_FEATURES
         else 'auditddi_motif_edge_aware_candidate.pt'
@@ -502,10 +568,92 @@ def persist_finalized_checkpoint(
 def build_run_manifest() -> dict[str, Any]:
     """Capture immutable inputs before any model fitting begins."""
     required_paths = {
-        'twosides_edges': TWOSIDES_EDGES,
-        'toxicity_bridge': TOXICITY_BRIDGE,
         'training_source': Path(__file__),
     }
+    if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file():
+        required_paths['twosides_clean_parquet'] = TWOSIDES_PARQUET
+        required_paths['twosides_drug_catalogue'] = TWOSIDES_DRUGS
+    else:
+        required_paths['legacy_twosides_edges'] = TWOSIDES_EDGES
+    if USE_SEVEN_SOURCE_FEATURES:
+        required_paths['seven_source_feature_matrix'] = SOURCE_FEATURE_MATRIX
+        required_paths['seven_source_bundle_manifest'] = SOURCE_BUNDLE_MANIFEST
+        required_paths['ddinter_match_audit'] = DDINTER_MATCH_AUDIT
+        required_paths['ddinter_prepared_pairs'] = SOURCE_BUNDLE / 'ddinter_pairs.csv'
+        if PRETRAINED_ENCODER_PATH is None:
+            raise ValueError(
+                'The seven-source architecture requires a ChEMBL-pretrained encoder. '
+                'Set AUDITDDI_PRETRAINED_ENCODER_PATH to its checkpoint.'
+            )
+        bundle = json.loads(SOURCE_BUNDLE_MANIFEST.read_text(encoding='utf-8'))
+        if bundle.get('source_roles', {}).get('openFDA', {}).get('status') != 'parsed':
+            raise ValueError(
+                'The seven-source feature bundle has no parsed openFDA features. '
+                'Rebuild it with --parse-openfda before training.'
+            )
+        openfda_info = bundle.get('source_roles', {}).get('openFDA', {})
+        if int(openfda_info.get('archives', 0)) == 0 or int(openfda_info.get('drug_feature_rows', 0)) == 0:
+            raise ValueError('The source bundle has no attributed openFDA drug-label features.')
+        if bundle.get('source_roles', {}).get('ChEMBL', {}).get('status') != 'available':
+            raise ValueError('The source bundle does not list the expected ChEMBL chemreps corpus.')
+        if int(bundle.get('counts', {}).get('pharmgkb_matched_drug_gene_rows', 0)) == 0:
+            raise ValueError('The seven-source feature bundle contains no matched PharmGKB gene rows.')
+        if int(bundle.get('counts', {}).get('faers_matched_drugs', 0)) == 0:
+            raise ValueError('The seven-source feature bundle contains no matched FAERS drugs.')
+        if int(bundle.get('counts', {}).get('ddinter_unique_pairs', 0)) == 0:
+            raise ValueError('The seven-source feature bundle contains no mapped DDInter pairs.')
+    if USE_SEVEN_BRANCH_MODEL:
+        required_paths['seven_branch_feature_bundle'] = SEVEN_BRANCH_FEATURE_BUNDLE
+        required_paths['seven_branch_feature_manifest'] = SEVEN_BRANCH_FEATURE_BUNDLE.with_suffix('.manifest.json')
+        if PRETRAINED_ENCODER_PATH is None:
+            raise ValueError(
+                'The seven-branch architecture requires the audited ChEMBL-pretrained '
+                'graph encoder. Set AUDITDDI_PRETRAINED_ENCODER_PATH.'
+            )
+        branch_manifest = json.loads(
+            SEVEN_BRANCH_FEATURE_BUNDLE.with_suffix('.manifest.json').read_text(encoding='utf-8')
+        )
+        if branch_manifest.get('schema') != 'auditddi_seven_branch_feature_bundle_v1':
+            raise ValueError('Seven-branch feature manifest schema is not supported.')
+        if (
+            branch_manifest.get('bundle_sha256')
+            and get_file_hash(SEVEN_BRANCH_FEATURE_BUNDLE) != branch_manifest['bundle_sha256']
+        ):
+            raise ValueError('Seven-branch feature bundle hash does not match its manifest.')
+        declared_branches = branch_manifest.get('branches', {})
+        missing_branches = set(SEVEN_BRANCH_NAMES).difference(declared_branches)
+        if missing_branches:
+            raise ValueError(f'Seven-branch manifest is missing branches: {sorted(missing_branches)}.')
+        for branch in SEVEN_BRANCH_NAMES:
+            if int(declared_branches[branch].get('available_drugs', 0)) <= 0:
+                raise ValueError(f'Seven-branch manifest reports no observed data for {branch}.')
+        source_provenance = branch_manifest.get('source_provenance', {})
+        for branch in SEVEN_BRANCH_NAMES:
+            details = source_provenance.get(branch, {})
+            for field in ('dataset', 'release', 'feature_definition', 'drug_identity_mapping'):
+                if not str(details.get(field, '')).strip():
+                    raise ValueError(
+                        f'Seven-branch provenance for {branch} must declare {field}.'
+                    )
+        adverse_event_provenance = source_provenance.get('adverse_event', {})
+        if adverse_event_provenance.get('pairwise_ddi_signals_excluded') is not True:
+            raise ValueError(
+                'Adverse-event features require provenance confirming pairwise DDI '
+                'signals were excluded.'
+            )
+        if not str(adverse_event_provenance.get('cutoff_date', '')).strip():
+            raise ValueError('Adverse-event feature provenance must declare cutoff_date.')
+        for branch, field in (
+            ('protein_target', 'activity_encoding'),
+            ('pdb_structure', 'structure_to_drug_mapping'),
+            ('gene_expression', 'cell_or_tissue_context'),
+            ('gene_expression', 'perturbation_type'),
+            ('gene_expression', 'aggregation_rule'),
+        ):
+            if not str(source_provenance.get(branch, {}).get(field, '')).strip():
+                raise ValueError(f'Seven-branch provenance for {branch} must declare {field}.')
+        required_paths['ddinter_match_audit'] = DDINTER_MATCH_AUDIT
+        required_paths['ddinter_prepared_pairs'] = SOURCE_BUNDLE / 'ddinter_pairs.csv'
     if PRETRAINED_ENCODER_PATH is not None:
         required_paths['pretrained_encoder'] = PRETRAINED_ENCODER_PATH
     if USE_MOTIF_FEATURES:
@@ -521,6 +669,42 @@ def build_run_manifest() -> dict[str, Any]:
         'device': str(DEVICE),
         'input_data_base': str(DRIVE_BASE),
         'results_base': str(RESULTS_BASE),
+        'source_usage': (
+            {
+                'supervised_pair_labels': ['TWOSIDES'],
+                'drug_identity_and_structure': ['PubChem'],
+                'graph_encoder_pretraining': ['ChEMBL'],
+                'seven_branch_feature_provenance': {
+                    branch: declared_branches[branch] for branch in SEVEN_BRANCH_NAMES
+                },
+                'known_positive_pair_exclusion_from_negative_sampling': ['DDInter'],
+                'negative_label_interpretation': 'unreported evidence; not known safe',
+                'all_seven_model_branches_required': True,
+            }
+            if USE_SEVEN_BRANCH_MODEL
+            else (
+            {
+                'supervised_pair_labels': ['TWOSIDES'],
+                'molecular_structures': ['PubChem'],
+                'molecular_encoder_pretraining': ['ChEMBL'],
+                'drug_level_input_features': ['PharmGKB', 'openFDA'],
+                'pharmacovigilance_audit_only': ['FAERS'],
+                'faers_feature_policy': 'report counts excluded pending temporal-overlap and reporting-bias evaluation',
+                'known_positive_pair_exclusion_from_negative_sampling': ['DDInter'],
+                'ddinter_pairs_are_training_labels': False,
+                'negative_label_interpretation': 'unreported evidence; not known safe',
+            }
+            if USE_SEVEN_SOURCE_FEATURES
+            else {
+                'supervised_pair_labels': ['TWOSIDES'],
+                'molecular_structures': ['PubChem'],
+                'not_consumed_by_this_trainer': [
+                    'ChEMBL', 'openFDA', 'FAERS', 'DDInter', 'PharmGKB'
+                ],
+                'warning': 'This run is a TWOSIDES+PubChem molecular baseline, not a seven-source fused model.',
+            }
+            )
+        ),
         'repository_git_commit': repository_git_commit(),
         'runtime_environment': runtime_environment(),
         'random_seed': MODEL_SEED,
@@ -528,9 +712,11 @@ def build_run_manifest() -> dict[str, Any]:
         'split_seed': SPLIT_SEED,
         'configuration': {
             'data_cap': DATA_CAP,
+            'excluded_twosides_drug_ids': list(EXCLUDED_TWOSIDES_DRUG_IDS),
             'model_seed': MODEL_SEED,
             'split_seed': SPLIT_SEED,
             'epochs': EPOCHS,
+            'resume_after_epoch': RESUME_AFTER_EPOCH if RESUME_CHECKPOINT_PATH else None,
             'hidden_channels': HIDDEN_CHANNELS,
             'batch_size': BATCH_SIZE,
             'early_stopping_patience': EARLY_STOPPING_PATIENCE,
@@ -559,6 +745,13 @@ def build_run_manifest() -> dict[str, Any]:
             'motif_feature_dim': MOTIF_FEATURE_DIM if USE_MOTIF_FEATURES else None,
             'motif_hidden_channels': MOTIF_HIDDEN_CHANNELS if USE_MOTIF_FEATURES else None,
             'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
+            'use_seven_source_drug_features': USE_SEVEN_SOURCE_FEATURES,
+            'use_seven_branch_model': USE_SEVEN_BRANCH_MODEL,
+            'seven_branch_feature_bundle_path': str(SEVEN_BRANCH_FEATURE_BUNDLE) if USE_SEVEN_BRANCH_MODEL else None,
+            'seven_branch_feature_bundle_sha256': (
+                get_file_hash(SEVEN_BRANCH_FEATURE_BUNDLE) if USE_SEVEN_BRANCH_MODEL else None
+            ),
+            'seven_source_feature_dimension': SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else None,
             'toxicity_loss_weight': TOXICITY_LOSS_WEIGHT,
             'edge_feature_dim': (
                 NUM_BOND_FEATURES
@@ -570,7 +763,6 @@ def build_run_manifest() -> dict[str, Any]:
             ),
             'negative_label_meaning': NEGATIVE_LABEL_MEANING,
             'negative_sampling_protocol': NEGATIVE_SAMPLING_PROTOCOL,
-            'toxicity_conflict_policy': 'exclude_conflicting_structures',
             'evaluation_protocol': EVALUATION_PROTOCOL,
             'test_set_bootstrap': {
                 'method': 'stratified_nonparametric_bootstrap',
@@ -702,8 +894,115 @@ def evaluation_checkpoint_provenance(
         'negative_sampling_protocol': NEGATIVE_SAMPLING_PROTOCOL,
         'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
         'toxicity_loss_weight': TOXICITY_LOSS_WEIGHT,
+        'use_pdb_encoder': USE_PDB_ENCODER,
+        'use_gene_encoder': USE_SEVEN_SOURCE_FEATURES,
+        'gene_feature_dim': SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else 50,
         'model_selection_validation_fraction': MODEL_SELECTION_VALIDATION_FRACTION,
     }
+
+
+def load_warm_start_checkpoint(
+    path: str | Path,
+    model: torch.nn.Module,
+    manifest: dict[str, Any],
+    split_manifest: dict[str, dict[str, Any]],
+    resume_after_epoch: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load best model weights for a guarded continuation after an interrupted run.
+
+    This is deliberately a warm start: the historical trainer checkpoints do
+    not contain Adam or scheduler state. The code hash is allowed to differ
+    because this resume support itself changes the trainer, but all data and
+    split hashes must still match.
+    """
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f'Warm-start checkpoint does not exist: {source}.')
+    checkpoint = torch.load(source, map_location='cpu', weights_only=False)
+    if not isinstance(checkpoint, dict):
+        raise TypeError('Warm-start checkpoint must be a metadata dictionary.')
+    state_dict = checkpoint.get('model_state_dict')
+    provenance = checkpoint.get('evaluation_provenance')
+    if not isinstance(state_dict, dict) or not isinstance(provenance, dict):
+        raise ValueError('Warm-start checkpoint is missing model weights or provenance.')
+
+    expected = evaluation_checkpoint_provenance(manifest, split_manifest)
+    old_hashes = provenance.get('input_sha256')
+    new_hashes = expected.get('input_sha256')
+    if not isinstance(old_hashes, dict) or not isinstance(new_hashes, dict):
+        raise ValueError('Warm-start checkpoint has no auditable input hashes.')
+    # The trainer file necessarily changed to add this warm-start path. Every
+    # data/pretraining input hash must remain identical.
+    old_data_hashes = {key: value for key, value in old_hashes.items() if key != 'training_source'}
+    new_data_hashes = {key: value for key, value in new_hashes.items() if key != 'training_source'}
+    if old_data_hashes != new_data_hashes:
+        raise ValueError(
+            'Warm-start checkpoint data inputs differ from the current run: '
+            f'{old_data_hashes} != {new_data_hashes}.'
+        )
+    # A small set of architecture fields was added to checkpoint provenance
+    # after earlier seed runs had already been produced. If such a field is
+    # absent or null, the checkpoint can still be resumed only when its
+    # architecture version matches and the complete state dict passes strict
+    # loading below. Explicitly recorded conflicts remain fatal.
+    state_dict_verified_legacy_fields = {
+        'use_pdb_encoder',
+        'use_clinical_toxicity',
+        'use_gene_encoder',
+        'gene_feature_dim',
+    }
+    unknown_legacy_fields = sorted(
+        key for key in state_dict_verified_legacy_fields
+        if key in expected and (key not in provenance or provenance[key] is None)
+    )
+    mismatches = {
+        key: {'checkpoint': provenance.get(key), 'current_run': value}
+        for key, value in expected.items()
+        if key not in {'input_sha256'}
+        and key in provenance
+        and not (key in state_dict_verified_legacy_fields and provenance[key] is None)
+        and provenance[key] != value
+    }
+    unexpected_missing = {
+        key: value
+        for key, value in expected.items()
+        if key not in {'input_sha256'}
+        and key not in provenance
+        and key not in state_dict_verified_legacy_fields
+    }
+    mismatches.update({
+        key: {'checkpoint': '<missing>', 'current_run': value}
+        for key, value in unexpected_missing.items()
+    })
+    if mismatches:
+        raise ValueError(f'Warm-start checkpoint configuration differs: {mismatches}.')
+    checkpoint_epoch = int(checkpoint.get('epoch', 0))
+    if checkpoint_epoch <= 0 or checkpoint_epoch > resume_after_epoch:
+        raise ValueError(
+            'Warm-start checkpoint epoch must be positive and no later than '
+            f'{resume_after_epoch}; got {checkpoint_epoch}.'
+        )
+    if checkpoint.get('architecture_version') != MODEL_ARCHITECTURE:
+        raise ValueError('Warm-start checkpoint architecture does not match this run.')
+    model.load_state_dict(state_dict, strict=True)
+    if unknown_legacy_fields:
+        print(
+            'Warm-start compatibility: older checkpoint has absent/null provenance '
+            f'fields {unknown_legacy_fields}; architecture and strict parameter '
+            'loading matched.'
+        )
+    info = {
+        'mode': 'best_checkpoint_weights_warm_start',
+        'checkpoint_path': str(source),
+        'checkpoint_sha256': get_file_hash(source),
+        'checkpoint_epoch': checkpoint_epoch,
+        'checkpoint_validation_auroc': float(checkpoint.get('auroc', float('nan'))),
+        'resume_after_epoch': resume_after_epoch,
+        'optimizer_state_restored': False,
+        'scheduler_state_restored': False,
+        'trainer_source_hash_may_differ': True,
+    }
+    return checkpoint, info
 
 
 def validate_checkpoint_for_evaluation(
@@ -757,6 +1056,10 @@ def validate_checkpoint_for_evaluation(
         'split_seed': 'split_seed',
         'use_toxicity_pair_features': 'use_toxicity_pair_features',
         'toxicity_loss_weight': 'toxicity_loss_weight',
+        'use_pdb_encoder': 'use_pdb_encoder',
+        'use_clinical_toxicity': 'use_clinical_toxicity',
+        'use_gene_encoder': 'use_gene_encoder',
+        'gene_feature_dim': 'gene_feature_dim',
     }
     missing_metadata = [key for key in metadata_contract if key not in checkpoint]
     if missing_metadata:
@@ -796,6 +1099,11 @@ def load_checkpoint_training_history(checkpoint: dict[str, Any]) -> dict[str, li
         )
     if get_file_hash(path) != metadata['sha256']:
         raise ValueError('Checkpoint training-history hash does not match its artifact.')
+    return load_training_history_file(path)
+
+
+def load_training_history_file(path: str | Path) -> dict[str, list[float]]:
+    """Read a real saved epoch history, retaining missing validation-loss gaps."""
     table = pd.read_csv(path)
     required_columns = (
         'epoch', 'loss', 'auroc', 'average_precision', 'f1', 'mcc',
@@ -807,10 +1115,21 @@ def load_checkpoint_training_history(checkpoint: dict[str, Any]) -> dict[str, li
             'Checkpoint training-history artifact is incomplete; missing columns: '
             f'{missing}.'
         )
-    return {
+    history = {
         column: pd.to_numeric(table[column], errors='raise').astype(float).tolist()
         for column in required_columns
     }
+    if 'val_loss' in table:
+        history['val_loss'] = pd.to_numeric(
+            table['val_loss'], errors='coerce'
+        ).astype(float).tolist()
+    else:
+        # Older runs did not log validation loss. Preserve their training-loss
+        # history, but leave explicit gaps instead of fabricating values.
+        history['val_loss'] = [float('nan')] * len(table)
+    if any(len(values) != len(table) for values in history.values()):
+        raise ValueError('Saved training history columns have inconsistent lengths.')
+    return history
 
 
 def save_training_history(history: dict[str, list[float]], artifact_dir: Path) -> dict[str, Any]:
@@ -863,19 +1182,17 @@ def publish_latest_results(
     """
     run_dir = Path(run_artifacts_dir)
     latest_dir = Path(latest_results_dir)
-    required_files = (
+    required_files = [
         Path('run_manifest_initial.json'),
         Path('run_manifest.json'),
         Path('results_summary.json'),
         Path('evaluation_metrics.csv'),
         Path('training_history.csv'),
-        Path('audits/toxicity_bridge_conflicts.csv'),
-        Path('audits/toxicity_bridge_summary.json'),
         Path('audits/invalid_smiles_exclusions.csv'),
         Path('audits/input_quality_summary.json'),
         Path('audits/dataset_summary.json'),
         Path('audits/counterion_curation_candidates.csv'),
-    )
+    ]
     missing = [str(relative) for relative in required_files if not (run_dir / relative).is_file()]
     if missing:
         raise FileNotFoundError(
@@ -1007,28 +1324,6 @@ def save_counterion_curation_candidates(exclusions: pd.DataFrame, audit_dir: Pat
     }
 
 
-def load_toxicity_lookup(audit_dir: Path) -> tuple[dict[str, float], dict[str, Any]]:
-    """Save toxicity conflicts to the current run and return clean labels only."""
-    bridge = pd.read_csv(TOXICITY_BRIDGE)
-    resolved, summary, conflicts = resolve_toxicity_bridge(bridge)
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    conflicts.to_csv(audit_dir / 'toxicity_bridge_conflicts.csv', index=False)
-    summary = {
-        **summary,
-        'conflict_policy': 'exclude_conflicting_structures',
-        'source_bridge_sha256': get_file_hash(TOXICITY_BRIDGE),
-        'conflict_report_path': str(audit_dir / 'toxicity_bridge_conflicts.csv'),
-    }
-    write_json(audit_dir / 'toxicity_bridge_summary.json', summary)
-    print(
-        'Toxicity bridge: '
-        f"{summary['source_rows']} source rows; "
-        f"{summary['resolved_unique_canonical_structures']} clean structures; "
-        f"{summary['excluded_conflicting_structures']} conflicts excluded."
-    )
-    return dict(zip(resolved['canonical_smiles'], resolved['toxicity_score'])), summary
-
-
 class GraphCache:
     """Reuse immutable SMILES graphs across train/validation/test loaders."""
     def __init__(
@@ -1087,12 +1382,16 @@ class AuditDDIDataset(Dataset):
         graph_cache: GraphCache | None = None,
         neighbor_memory: AuditableNeighborMemory | None = None,
         exclude_query_pair_from_memory: bool = False,
+        source_feature_lookup: dict[str, np.ndarray] | None = None,
+        seven_branch_feature_lookup: dict[str, dict[str, tuple[np.ndarray, float]]] | None = None,
     ) -> None:
         super().__init__()
         self.records = []
         self.metadata: list[dict[str, Any]] = []
         self.skipped_count = 0
         self.neighbor_memory = neighbor_memory
+        self.source_feature_lookup = source_feature_lookup
+        self.seven_branch_feature_lookup = seven_branch_feature_lookup
         self.graph_cache = graph_cache or GraphCache(
             FEATURE_SCHEMA,
             include_motif_features=USE_MOTIF_FEATURES,
@@ -1102,6 +1401,11 @@ class AuditDDIDataset(Dataset):
             source = getattr(row, source_col)
             target = getattr(row, target_col)
             label = float(getattr(row, label_col))
+            # Validate structures now, but do not retain two cloned graph
+            # objects for every pair in every split. The pair tables can have
+            # hundreds of thousands of rows, while the molecular cache only
+            # needs one base graph per unique structure. ``get`` creates the
+            # pair graphs lazily when a batch is requested.
             graph_a = self.graph_cache.get(source)
             graph_b = self.graph_cache.get(target)
             if graph_a is None or graph_b is None:
@@ -1115,8 +1419,8 @@ class AuditDDIDataset(Dataset):
             toxicity_b_known = float(toxicity_b is not None)
 
             record_items = [
-                graph_a,
-                graph_b,
+                source,
+                target,
                 0.0 if toxicity_a is None else toxicity_a,
                 0.0 if toxicity_b is None else toxicity_b,
                 toxicity_a_known,
@@ -1151,7 +1455,54 @@ class AuditDDIDataset(Dataset):
         return len(self.records)
 
     def get(self, idx: int):
-        return self.records[idx]
+        source, target, toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known, label, *extra = self.records[idx]
+        graph_a = self.graph_cache.get(source)
+        graph_b = self.graph_cache.get(target)
+        if graph_a is None or graph_b is None:
+            raise RuntimeError('A molecular graph became unavailable after dataset validation.')
+        if self.source_feature_lookup is not None:
+            # GraphCache returns fresh clones, so attaching profiles cannot
+            # mutate its reusable per-structure graph objects.
+            source_key = canonicalize(source)
+            target_key = canonicalize(target)
+            profile_a = self.source_feature_lookup.get(source_key)
+            profile_b = self.source_feature_lookup.get(target_key)
+            profile_a = (
+                np.zeros(SEVEN_SOURCE_FEATURE_DIM, dtype=np.float32)
+                if profile_a is None else profile_a
+            )
+            profile_b = (
+                np.zeros(SEVEN_SOURCE_FEATURE_DIM, dtype=np.float32)
+                if profile_b is None else profile_b
+            )
+            graph_a.source_features = torch.as_tensor(profile_a, dtype=torch.float32)
+            graph_b.source_features = torch.as_tensor(profile_b, dtype=torch.float32)
+            graph_a.source_profile_mask = torch.tensor([float(np.any(profile_a[-3:]))], dtype=torch.float32)
+            graph_b.source_profile_mask = torch.tensor([float(np.any(profile_b[-3:]))], dtype=torch.float32)
+        if self.seven_branch_feature_lookup is not None:
+            source_key = canonicalize(source)
+            target_key = canonicalize(target)
+            for branch in SEVEN_BRANCH_NAMES:
+                width = SEVEN_BRANCH_DIMENSIONS[branch]
+                for graph, key in ((graph_a, source_key), (graph_b, target_key)):
+                    item = self.seven_branch_feature_lookup.get(key, {}).get(branch) if key else None
+                    if item is None:
+                        vector = np.zeros(width, dtype=np.float32)
+                        available = 0.0
+                    else:
+                        vector, available = item
+                    setattr(graph, f'{branch}_features', torch.as_tensor(vector, dtype=torch.float32))
+                    setattr(graph, f'{branch}_mask', torch.tensor([available], dtype=torch.float32))
+        return (
+            graph_a,
+            graph_b,
+            toxicity_a,
+            toxicity_b,
+            toxicity_a_known,
+            toxicity_b_known,
+            label,
+            *extra,
+        )
 
 
 PxDDIDataset = AuditDDIDataset
@@ -1197,6 +1548,8 @@ def build_loader(
     generator_seed: int = MODEL_SEED,
     neighbor_memory: AuditableNeighborMemory | None = None,
     exclude_query_pair_from_memory: bool = False,
+    source_feature_lookup: dict[str, np.ndarray] | None = None,
+    seven_branch_feature_lookup: dict[str, dict[str, tuple[np.ndarray, float]]] | None = None,
 ) -> DataLoader:
     dataset = AuditDDIDataset(
         dataframe,
@@ -1204,6 +1557,8 @@ def build_loader(
         graph_cache=graph_cache,
         neighbor_memory=neighbor_memory,
         exclude_query_pair_from_memory=exclude_query_pair_from_memory,
+        source_feature_lookup=source_feature_lookup,
+        seven_branch_feature_lookup=seven_branch_feature_lookup,
     )
     generator = torch.Generator()
     generator.manual_seed(generator_seed)
@@ -1216,29 +1571,11 @@ def build_loader(
     )
 
 
-def multi_task_loss(
-    risk_prediction,
-    toxicity_a_prediction,
-    toxicity_b_prediction,
-    risk_label,
-    toxicity_a_label,
-    toxicity_b_label,
-    toxicity_a_known,
-    toxicity_b_known,
-    toxicity_loss_weight: float = TOXICITY_LOSS_WEIGHT,
-):
-    # All three model heads return raw logits.  Applying BCELoss to the
-    # auxiliary heads would both fail for valid logits outside [0, 1] and use
-    # a different loss contract from the interaction head.
-    bce_with_logits = torch.nn.BCEWithLogitsLoss(reduction='none')
-    ddi_loss = bce_with_logits(risk_prediction, risk_label).mean()
-    toxicity_a_loss = (
-        bce_with_logits(toxicity_a_prediction, toxicity_a_label) * toxicity_a_known
-    ).sum() / (toxicity_a_known.sum() + 1e-8)
-    toxicity_b_loss = (
-        bce_with_logits(toxicity_b_prediction, toxicity_b_label) * toxicity_b_known
-    ).sum() / (toxicity_b_known.sum() + 1e-8)
-    return ddi_loss + toxicity_loss_weight * (toxicity_a_loss + toxicity_b_loss)
+def ddi_binary_loss(risk_prediction, risk_label):
+    """Binary interaction loss; single-drug toxicity labels are not consumed."""
+    return torch.nn.functional.binary_cross_entropy_with_logits(
+        risk_prediction, risk_label
+    )
 
 
 def train_one_epoch(model, loader, optimizer, scaler) -> float:
@@ -1254,31 +1591,45 @@ def train_one_epoch(model, loader, optimizer, scaler) -> float:
             graph_a, graph_b, toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known, labels = batch_items
             mem_feat = None
         graph_a, graph_b = graph_a.to(DEVICE), graph_b.to(DEVICE)
-        toxicity_a = toxicity_a.to(DEVICE)
-        toxicity_b = toxicity_b.to(DEVICE)
-        toxicity_a_known = toxicity_a_known.to(DEVICE)
-        toxicity_b_known = toxicity_b_known.to(DEVICE)
         labels = labels.to(DEVICE)
         optimizer.zero_grad()
         if scaler is not None:
             with torch.amp.autocast('cuda'):
                 risk, prediction_a, prediction_b = model(graph_a, graph_b, memory_features=mem_feat)
-                loss = multi_task_loss(
-                    risk, prediction_a, prediction_b, labels,
-                    toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known,
-                )
+                loss = ddi_binary_loss(risk, labels)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
             risk, prediction_a, prediction_b = model(graph_a, graph_b, memory_features=mem_feat)
-            loss = multi_task_loss(
-                risk, prediction_a, prediction_b, labels,
-                toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known,
-            )
+            loss = ddi_binary_loss(risk, labels)
             loss.backward()
             optimizer.step()
         total_loss += float(loss.item())
+    return total_loss / len(loader)
+
+
+def evaluate_one_epoch_loss(model, loader) -> float:
+    """Compute binary interaction loss on the validation loader."""
+    if len(loader) == 0:
+        raise ValueError('Validation loader is empty after SMILES validation.')
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch_items in loader:
+            if len(batch_items) > 7:
+                graph_a, graph_b, toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known, labels, mem_feat = batch_items
+                mem_feat = mem_feat.to(DEVICE)
+            else:
+                graph_a, graph_b, toxicity_a, toxicity_b, toxicity_a_known, toxicity_b_known, labels = batch_items
+                mem_feat = None
+            graph_a, graph_b = graph_a.to(DEVICE), graph_b.to(DEVICE)
+            labels = labels.to(DEVICE)
+            risk, _, _ = model(
+                graph_a, graph_b, memory_features=mem_feat
+            )
+            loss = ddi_binary_loss(risk, labels)
+            total_loss += float(loss.item())
     return total_loss / len(loader)
 
 
@@ -1655,7 +2006,7 @@ def generate_candidate_explanation_artifact(
         )
         examples = []
         for index in selected_indices:
-            graph_a, graph_b, *_ = loader.dataset.records[index]
+            graph_a, graph_b, *_ = loader.dataset[index]
             metadata = cast(AuditDDIDataset, loader.dataset).metadata[index]
             example: dict[str, Any] = {
                 'dataset_index': index,
@@ -1756,7 +2107,13 @@ def _save_figure(figure, destination: Path) -> None:
 def plot_training_curves(history: dict[str, list[float]], figure_dir: Path) -> None:
     figure, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     axes[0].plot(history['epoch'], history['loss'], color='#0072B2', label='Training loss')
-    axes[0].set(title='Training loss', xlabel='Epoch', ylabel='Loss')
+    if history.get('val_loss') and np.isfinite(history['val_loss']).any():
+        axes[0].plot(
+            history['epoch'], history['val_loss'], color='#D55E00',
+            label='Validation loss',
+        )
+        axes[0].legend()
+    axes[0].set(title='Training and validation loss', xlabel='Epoch', ylabel='BCE loss')
     axes[0].grid(alpha=0.25)
     metric_lines = (
         ('auroc', 'Model-selection AUROC', '#D55E00'),
@@ -1870,24 +2227,6 @@ def plot_benchmark_comparison(results: dict[str, dict[str, Any]], figure_dir: Pa
     _save_figure(figure, figure_dir / 'benchmark_comparison')
 
 
-def plot_toxicity_bridge_coverage(summary: dict[str, Any], figure_dir: Path) -> None:
-    labels = ['Source rows', 'Mapped rows', 'Unique structures', 'Clean structures']
-    values = [
-        summary['source_rows'],
-        summary['rows_with_canonical_smiles'],
-        summary['unique_canonical_structures'],
-        summary['resolved_unique_canonical_structures'],
-    ]
-    figure, axis = plt.subplots(figsize=(8, 4.8))
-    bars = axis.bar(labels, values, color=['#0072B2', '#56B4E9', '#E69F00', '#009E73'])
-    for bar, value in zip(bars, values):
-        axis.text(bar.get_x() + bar.get_width() / 2, value, str(value), ha='center', va='bottom')
-    axis.set(title='Toxicity bridge coverage after conflict exclusion', ylabel='Structure count')
-    axis.grid(axis='y', alpha=0.25)
-    figure.tight_layout()
-    _save_figure(figure, figure_dir / 'toxicity_bridge_coverage')
-
-
 def model_summary(model: AuditDDIModel) -> dict[str, Any]:
     """Return a compact architecture and parameter summary for the run manifest."""
     total_parameters = sum(parameter.numel() for parameter in model.parameters())
@@ -1910,6 +2249,10 @@ def model_summary(model: AuditDDIModel) -> dict[str, Any]:
             if USE_NEIGHBOR_MEMORY else None
         ),
         'use_cross_drug_attention': USE_CROSS_DRUG_ATTENTION,
+        'use_gene_encoder': USE_SEVEN_SOURCE_FEATURES,
+        'gene_feature_dim': SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else None,
+        'use_pdb_encoder': USE_PDB_ENCODER,
+        'use_clinical_toxicity': USE_CLINICAL_TOXICITY,
         'cross_drug_attention_type': (
             'pair_isolated_atom_attention_v1'
             if USE_CROSS_DRUG_ATTENTION else None
@@ -1923,23 +2266,99 @@ def model_summary(model: AuditDDIModel) -> dict[str, Any]:
         'hidden_channels': HIDDEN_CHANNELS,
         'use_chemberta': USE_CHEMBERTA,
         'pair_representation': (
-            'graph_embedding_plus_pair_isolated_cross_drug_atom_attention_sum + absolute_difference + toxicity_sum + absolute_toxicity_difference'
-            if USE_CROSS_DRUG_ATTENTION and USE_TOXICITY_PAIR_FEATURES
-            else 'graph_embedding_plus_pair_isolated_cross_drug_atom_attention_sum + absolute_difference'
+            'graph_embedding_plus_pair_isolated_cross_drug_atom_attention_sum + absolute_difference'
             if USE_CROSS_DRUG_ATTENTION
-            else
-            'graph_embedding_plus_motif_embedding_sum + absolute_difference + toxicity_sum + absolute_toxicity_difference'
-            if USE_MOTIF_FEATURES and USE_TOXICITY_PAIR_FEATURES
             else 'graph_embedding_plus_motif_embedding_sum + absolute_difference'
             if USE_MOTIF_FEATURES
-            else 'embedding_sum + absolute_embedding_difference + toxicity_sum + absolute_toxicity_difference'
-            if USE_TOXICITY_PAIR_FEATURES
             else 'embedding_sum + absolute_embedding_difference'
         ),
-        'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
-        'output_heads': ['interaction_risk', 'drug_a_toxicity', 'drug_b_toxicity'],
+        'output_heads': ['interaction_risk'],
         'total_parameters': int(total_parameters),
         'trainable_parameters': int(trainable_parameters),
+    }
+
+
+def save_model_layer_summary(model: AuditDDIModel, artifact_dir: Path) -> dict[str, Any]:
+    """Write a parameterized-layer table from the actual instantiated model."""
+    rows: list[dict[str, Any]] = []
+    active_components = {'encoder', 'risk_classifier'}
+    if USE_SEVEN_BRANCH_MODEL:
+        # SevenBranchDDIModel names these modules differently from the older
+        # multimodal model. They are supplied by each dataset item and participate
+        # in the seven-branch forward pass; keep the layer audit aligned with that.
+        active_components.update({'fingerprint_encoder', 'branch_encoders'})
+    else:
+        active_components.update({'fp_encoder', 'gene_encoder', 'gene_gate'})
+    if USE_CROSS_DRUG_ATTENTION:
+        active_components.add('cross_drug_attention')
+    if USE_MOTIF_FEATURES:
+        active_components.add('motif_encoder')
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        direct_parameters = list(module.parameters(recurse=False))
+        count = sum(parameter.numel() for parameter in direct_parameters)
+        if count == 0:
+            continue
+        if isinstance(module, nn.Linear):
+            dimensions = f'{module.in_features} -> {module.out_features}'
+        elif module.__class__.__name__ == 'GATv2Conv':
+            dimensions = (
+                f'in={module.in_channels}; out={module.out_channels}; '
+                f'heads={module.heads}; edge_dim={module.edge_dim}'
+            )
+        else:
+            dimensions = ''
+        rows.append({
+            'module_path': name,
+            'component': name.split('.', 1)[0],
+            'layer_type': module.__class__.__name__,
+            'DDI_run_status': (
+                'active' if name.split('.', 1)[0] in active_components
+                else 'inactive_or_optional_not_supplied'
+            ),
+            'dimensions': dimensions,
+            'parameter_shapes': '; '.join(
+                str(tuple(parameter.shape)) for parameter in direct_parameters
+            ),
+            'parameters': count,
+            'trainable_parameters': sum(
+                parameter.numel() for parameter in direct_parameters
+                if parameter.requires_grad
+            ),
+        })
+
+    total = sum(parameter.numel() for parameter in model.parameters())
+    rows.append({
+        'module_path': 'TOTAL',
+        'component': 'complete_model',
+        'layer_type': model.__class__.__name__,
+        'DDI_run_status': 'complete_model',
+        'dimensions': MODEL_ARCHITECTURE,
+        'parameter_shapes': '',
+        'parameters': total,
+        'trainable_parameters': sum(
+            parameter.numel() for parameter in model.parameters()
+            if parameter.requires_grad
+        ),
+    })
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    output_path = artifact_dir / 'model_summary_layers.csv'
+    table = pd.DataFrame(rows)
+    table.to_csv(output_path, index=False)
+    print('Model layer summary (parameterized layers):')
+    print(table.to_string(index=False))
+    return {
+        'path': str(output_path),
+        'sha256': get_file_hash(output_path),
+        'parameterized_layer_rows': len(rows) - 1,
+        'active_parameterized_layer_rows': sum(
+            row['DDI_run_status'] == 'active' for row in rows[:-1]
+        ),
+        'inactive_parameterized_layer_rows': sum(
+            row['DDI_run_status'] != 'active' for row in rows[:-1]
+        ),
+        'total_parameters': int(total),
     }
 
 
@@ -1967,13 +2386,87 @@ def _prepare_positive_edges(
     *,
     return_all_clean_positives: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any]] | tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
-    """Deduplicate and validate positive pairs before negative sampling or splitting."""
-    edges = pd.read_csv(TWOSIDES_EDGES)
-    required_columns = {'source', 'target'}
-    missing = required_columns.difference(edges.columns)
-    if missing:
-        raise ValueError(f'TWOSIDES edges are missing required columns: {sorted(missing)}.')
-    positives = edges[['source', 'target']].copy()
+    """Load audited Drive preparation, with a legacy edge-file fallback.
+
+    The versioned parquet stores integer indices into ``drugs_clean.csv``;
+    translate those indices to canonical structures here so the molecular
+    trainer consumes the user's current prepared data instead of requiring an
+    obsolete, separately generated edge CSV.
+    """
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file():
+        interactions = pd.read_parquet(TWOSIDES_PARQUET)
+        catalogue = pd.read_csv(TWOSIDES_DRUGS)
+        required_interactions = {'drug_a', 'drug_b'}
+        required_catalogue = {'drug_idx', 'smiles'}
+        if not required_interactions.issubset(interactions.columns):
+            raise ValueError(
+                'Prepared TWOSIDES parquet must contain drug_a and drug_b; '
+                f'found {interactions.columns.tolist()}.'
+            )
+        if not required_catalogue.issubset(catalogue.columns):
+            raise ValueError(
+                'Prepared TWOSIDES drug catalogue must contain drug_idx and smiles; '
+                f'found {catalogue.columns.tolist()}.'
+            )
+        if catalogue['drug_idx'].duplicated().any():
+            raise ValueError('Prepared TWOSIDES drug_idx values are not unique.')
+        excluded_rows = 0
+        excluded_pair_count = 0
+        if EXCLUDED_TWOSIDES_DRUG_IDS:
+            catalogue_ids = set(pd.to_numeric(catalogue['drug_idx'], errors='coerce').dropna().astype(int))
+            unknown_excluded_ids = set(EXCLUDED_TWOSIDES_DRUG_IDS) - catalogue_ids
+            if unknown_excluded_ids:
+                raise ValueError(
+                    'Excluded TWOSIDES drug IDs are absent from drugs_clean.csv: '
+                    f'{sorted(unknown_excluded_ids)}.'
+                )
+            drug_a_ids = pd.to_numeric(interactions['drug_a'], errors='coerce')
+            drug_b_ids = pd.to_numeric(interactions['drug_b'], errors='coerce')
+            excluded_mask = drug_a_ids.isin(EXCLUDED_TWOSIDES_DRUG_IDS) | drug_b_ids.isin(EXCLUDED_TWOSIDES_DRUG_IDS)
+            excluded_rows = int(excluded_mask.sum())
+            excluded_pairs = interactions.loc[excluded_mask, ['drug_a', 'drug_b']].copy()
+            if not excluded_pairs.empty:
+                excluded_pairs['pair_a'] = excluded_pairs[['drug_a', 'drug_b']].min(axis=1)
+                excluded_pairs['pair_b'] = excluded_pairs[['drug_a', 'drug_b']].max(axis=1)
+                excluded_pairs = excluded_pairs[['pair_a', 'pair_b']].drop_duplicates()
+                excluded_pair_count = len(excluded_pairs)
+                names_by_id = catalogue.set_index('drug_idx')['names'] if 'names' in catalogue else pd.Series(dtype=object)
+                excluded_pairs['drug_a_name'] = excluded_pairs['pair_a'].map(names_by_id)
+                excluded_pairs['drug_b_name'] = excluded_pairs['pair_b'].map(names_by_id)
+                excluded_pairs['excluded_drug_ids'] = ','.join(map(str, EXCLUDED_TWOSIDES_DRUG_IDS))
+                excluded_pairs.to_csv(audit_dir / 'identity_review_excluded_positive_pairs.csv', index=False)
+            interactions = interactions.loc[~excluded_mask].copy()
+        smiles_by_idx = catalogue.set_index('drug_idx')['smiles']
+        drug_a_smiles = interactions['drug_a'].map(smiles_by_idx)
+        drug_b_smiles = interactions['drug_b'].map(smiles_by_idx)
+        missing_map = drug_a_smiles.isna() | drug_b_smiles.isna()
+        if missing_map.any():
+            examples = interactions.loc[missing_map, ['drug_a', 'drug_b']].head(5)
+            raise ValueError(
+                f'{int(missing_map.sum())} prepared TWOSIDES rows reference drug '
+                f'indices absent from drugs_clean.csv. Examples: {examples.to_dict("records")}'
+            )
+        positives = pd.DataFrame({'source': drug_a_smiles, 'target': drug_b_smiles})
+    else:
+        if EXCLUDED_TWOSIDES_DRUG_IDS:
+            raise ValueError(
+                'AUDITDDI_EXCLUDED_TWOSIDES_DRUG_IDS requires the prepared '
+                'twosides_clean.parquet and drugs_clean.csv inputs; refusing to '
+                'silently ignore the requested identity exclusions.'
+            )
+        if not TWOSIDES_EDGES.is_file():
+            raise FileNotFoundError(
+                'Audited TWOSIDES inputs were not found. Expected '
+                f'{TWOSIDES_PARQUET} and {TWOSIDES_DRUGS}. The legacy fallback '
+                f'{TWOSIDES_EDGES} is also missing.'
+            )
+        edges = pd.read_csv(TWOSIDES_EDGES)
+        required_columns = {'source', 'target'}
+        missing = required_columns.difference(edges.columns)
+        if missing:
+            raise ValueError(f'TWOSIDES edges are missing required columns: {sorted(missing)}.')
+        positives = edges[['source', 'target']].copy()
     positives['label'] = 1.0
     positives = deduplicate_unordered_pairs(positives, 'source', 'target')
     clean_positives, exclusions = filter_graph_compatible_pairs(positives)
@@ -1988,6 +2481,9 @@ def _prepare_positive_edges(
         n=min(DATA_CAP, len(clean_positives)), random_state=sampling_seed
     ).reset_index(drop=True)
     summary = {
+        'excluded_twosides_drug_ids': list(EXCLUDED_TWOSIDES_DRUG_IDS),
+        'identity_review_excluded_event_rows': excluded_rows if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file() else 0,
+        'identity_review_excluded_unique_pairs': excluded_pair_count if TWOSIDES_PARQUET.is_file() and TWOSIDES_DRUGS.is_file() else 0,
         'raw_unique_positive_pairs': len(positives),
         'excluded_positive_pairs': len(exclusions),
         'clean_positive_pairs': len(clean_positives),
@@ -2009,10 +2505,137 @@ def _prepare_positive_edges(
     return sampled, summary
 
 
+def load_seven_source_feature_lookup() -> tuple[dict[str, np.ndarray], list[str]]:
+    """Load CID-audited source profiles indexed by canonical PubChem SMILES."""
+    if not USE_SEVEN_SOURCE_FEATURES:
+        return {}, []
+    with np.load(SOURCE_FEATURE_MATRIX, allow_pickle=False) as source:
+        required = {'canonical_smiles', 'features', 'feature_names'}
+        missing = required.difference(source.files)
+        if missing:
+            raise ValueError(f'Source feature matrix is missing arrays: {sorted(missing)}')
+        smiles = source['canonical_smiles'].astype(str)
+        matrix = source['features'].astype(np.float32)
+        names = source['feature_names'].astype(str).tolist()
+    if matrix.ndim != 2 or matrix.shape[1] != SEVEN_SOURCE_FEATURE_DIM:
+        raise ValueError(
+            f'Expected source feature shape [n, {SEVEN_SOURCE_FEATURE_DIM}], got {matrix.shape}.'
+        )
+    if len(smiles) != len(matrix) or len(names) != matrix.shape[1]:
+        raise ValueError('Source feature matrix row/column metadata does not match its shape.')
+    if not np.isfinite(matrix).all():
+        raise ValueError('Source feature matrix contains NaN or infinite values.')
+    profiles: dict[str, np.ndarray] = {}
+    for raw_smiles, profile in zip(smiles, matrix):
+        key = canonicalize(raw_smiles) if raw_smiles else None
+        if key is None:
+            continue
+        if key in profiles and not np.array_equal(profiles[key], profile):
+            profiles[key] = np.maximum(profiles[key], profile)
+        else:
+            profiles[key] = profile
+    if not profiles:
+        raise ValueError('No source profiles could be joined to canonical molecular structures.')
+    return profiles, names
+
+
+def load_seven_branch_feature_bundle() -> tuple[
+    dict[str, dict[str, tuple[np.ndarray, float]]], dict[str, int], dict[str, list[str]], dict[str, Any]
+]:
+    """Load and audit the five vector branches accompanying graph and Morgan inputs."""
+    if not USE_SEVEN_BRANCH_MODEL:
+        return {}, {}, {}, {}
+    manifest_path = SEVEN_BRANCH_FEATURE_BUNDLE.with_suffix('.manifest.json')
+    bundle_manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if bundle_manifest.get('schema') != 'auditddi_seven_branch_feature_bundle_v1':
+        raise ValueError('Unsupported seven-branch feature bundle schema.')
+    expected_hash = bundle_manifest.get('bundle_sha256')
+    if expected_hash and get_file_hash(SEVEN_BRANCH_FEATURE_BUNDLE) != expected_hash:
+        raise ValueError('Seven-branch bundle hash does not match its manifest.')
+    result: dict[str, dict[str, tuple[np.ndarray, float]]] = {}
+    dimensions: dict[str, int] = {}
+    feature_names: dict[str, list[str]] = {}
+    with np.load(SEVEN_BRANCH_FEATURE_BUNDLE, allow_pickle=False) as data:
+        required = {'canonical_smiles'}
+        for branch in SEVEN_BRANCH_NAMES:
+            required.update({
+                f'{branch}_features', f'{branch}_mask', f'{branch}_feature_names'
+            })
+        missing = required.difference(data.files)
+        if missing:
+            raise ValueError(f'Seven-branch bundle is missing arrays: {sorted(missing)}.')
+        smiles = data['canonical_smiles'].astype(str)
+        if smiles.ndim != 1 or len(smiles) != len(set(smiles.tolist())):
+            raise ValueError('Seven-branch bundle needs unique one-dimensional canonical_smiles keys.')
+        matrices: dict[str, np.ndarray] = {}
+        masks: dict[str, np.ndarray] = {}
+        for branch in SEVEN_BRANCH_NAMES:
+            matrix = data[f'{branch}_features'].astype(np.float32)
+            mask = data[f'{branch}_mask'].astype(np.float32).reshape(-1)
+            names = data[f'{branch}_feature_names'].astype(str).tolist()
+            if matrix.ndim != 2 or matrix.shape[0] != len(smiles) or matrix.shape[1] <= 0:
+                raise ValueError(f'Invalid matrix shape for {branch}: {matrix.shape}.')
+            if len(mask) != len(smiles) or len(names) != matrix.shape[1]:
+                raise ValueError(f'Feature metadata shape mismatch for {branch}.')
+            if not np.isfinite(matrix).all() or not np.isin(mask, [0.0, 1.0]).all():
+                raise ValueError(f'{branch} values or availability mask are invalid.')
+            if not np.any(mask == 1.0):
+                raise ValueError(f'{branch} has no observed drug features; refusing empty branch.')
+            # Masked values are normalized to zero; the mask remains a distinct input.
+            matrix[mask == 0.0] = 0.0
+            matrices[branch] = matrix
+            masks[branch] = mask
+            dimensions[branch] = int(matrix.shape[1])
+            feature_names[branch] = names
+        for index, raw_smiles in enumerate(smiles):
+            key = canonicalize(raw_smiles) if raw_smiles else None
+            if key is None:
+                continue
+            if key in result:
+                raise ValueError(f'Duplicate canonical drug identity in seven-branch bundle: {key}.')
+            result[key] = {
+                branch: (matrices[branch][index], float(masks[branch][index]))
+                for branch in SEVEN_BRANCH_NAMES
+            }
+    if not result:
+        raise ValueError('No seven-branch bundle rows map to canonical molecular structures.')
+    return result, dimensions, feature_names, bundle_manifest
+
+
+def load_ddinter_known_smiles_pairs() -> pd.DataFrame:
+    """Map audited DDInter positives onto the TWOSIDES structure universe."""
+    if not (USE_SEVEN_SOURCE_FEATURES or USE_SEVEN_BRANCH_MODEL):
+        return pd.DataFrame(columns=['source', 'target'])
+    pairs_path = SOURCE_BUNDLE / 'ddinter_pairs.csv'
+    if not pairs_path.is_file() or not TWOSIDES_DRUGS.is_file():
+        raise FileNotFoundError(
+            'Build processed/auditddi_v2/ddinter_pairs.csv and retain the '
+            'processed/twosides_v1/drugs_clean.csv before seven-source training.'
+        )
+    pairs = pd.read_csv(pairs_path)
+    catalogue = pd.read_csv(TWOSIDES_DRUGS)
+    if not {'pair_a', 'pair_b'}.issubset(pairs.columns) or not {'drug_idx', 'smiles'}.issubset(catalogue.columns):
+        raise ValueError('DDInter pair file or TWOSIDES drug catalogue has an unexpected schema.')
+    smiles_by_idx = catalogue.set_index('drug_idx')['smiles']
+    result = pd.DataFrame({
+        'source': pd.to_numeric(pairs['pair_a'], errors='coerce').map(smiles_by_idx),
+        'target': pd.to_numeric(pairs['pair_b'], errors='coerce').map(smiles_by_idx),
+    }).dropna()
+    if result.empty:
+        raise ValueError('No DDInter pairs map to prepared TWOSIDES molecular structures.')
+    result['label'] = 1.0
+    return deduplicate_unordered_pairs(result, 'source', 'target')[['source', 'target']]
+
+
 def main() -> None:
-    global CHECKPOINT_PATH
+    global CHECKPOINT_PATH, SEVEN_BRANCH_DIMENSIONS
     if DATA_BASE_RESOLUTION_ERROR is not None:
         raise DATA_BASE_RESOLUTION_ERROR
+    if USE_SEVEN_BRANCH_MODEL and TOXICITY_LOSS_WEIGHT != 0.0:
+        raise ValueError(
+            'The proposed seven-branch task predicts DDI association only; '
+            'set AUDITDDI_TOXICITY_LOSS_WEIGHT=0.'
+        )
     set_reproducibility(MODEL_SEED)
     print(f'Training on: {DEVICE}')
     if DEVICE.type != 'cuda':
@@ -2028,13 +2651,71 @@ def main() -> None:
     manifest = build_run_manifest()
     write_json(RUN_ARTIFACTS_DIR / 'run_manifest_initial.json', manifest)
 
-    toxicity_lookup, toxicity_summary = load_toxicity_lookup(audit_dir)
+    toxicity_lookup = {}
     positives, input_quality_summary, all_clean_positives = cast(
         tuple[pd.DataFrame, dict[str, Any], pd.DataFrame],
         _prepare_positive_edges(
             audit_dir, sampling_seed=SPLIT_SEED, return_all_clean_positives=True
         ),
     )
+    source_feature_lookup, source_feature_names = load_seven_source_feature_lookup()
+    seven_branch_feature_lookup, SEVEN_BRANCH_DIMENSIONS, seven_branch_feature_names, seven_branch_manifest = (
+        load_seven_branch_feature_bundle()
+    )
+    if USE_SEVEN_BRANCH_MODEL:
+        universe_smiles = {
+            key
+            for raw_smiles in pd.concat(
+                [all_clean_positives['source'], all_clean_positives['target']],
+                ignore_index=True,
+            ).dropna().astype(str).unique()
+            if (key := canonicalize(raw_smiles)) is not None
+        }
+        branch_coverage = {
+            branch: int(sum(
+                seven_branch_feature_lookup.get(smiles, {}).get(branch, (None, 0.0))[1] > 0
+                for smiles in universe_smiles
+            ))
+            for branch in SEVEN_BRANCH_NAMES
+        }
+        missing_universe_branches = [
+            branch for branch, count in branch_coverage.items() if count == 0
+        ]
+        if missing_universe_branches:
+            raise ValueError(
+                'Seven-branch data has no observed drug matched to the TWOSIDES '
+                f'drug universe for: {missing_universe_branches}.'
+            )
+        write_json(audit_dir / 'seven_branch_feature_coverage.json', {
+            'schema': 'auditddi_seven_branch_feature_coverage_v1',
+            'bundle_manifest': seven_branch_manifest,
+            'dimensions': SEVEN_BRANCH_DIMENSIONS,
+            'feature_names': seven_branch_feature_names,
+            'bundle_drugs': len(seven_branch_feature_lookup),
+            'twosides_drug_universe': len(universe_smiles),
+            'observed_twosides_drugs_by_branch': branch_coverage,
+            'twosides_drug_coverage_by_branch': {
+                branch: count / len(universe_smiles) if universe_smiles else 0.0
+                for branch, count in branch_coverage.items()
+            },
+            'note': 'Observed-row masks are passed into the corresponding encoder.',
+        })
+        print('Seven-branch TWOSIDES drug coverage:', {
+            branch: f'{count}/{len(universe_smiles)}'
+            for branch, count in branch_coverage.items()
+        })
+    ddinter_known_pairs = load_ddinter_known_smiles_pairs()
+    all_known_reported_pairs = pd.concat(
+        [all_clean_positives[['source', 'target']], ddinter_known_pairs],
+        ignore_index=True,
+    ).drop_duplicates().reset_index(drop=True)
+    if USE_SEVEN_SOURCE_FEATURES:
+        input_quality_summary['ddinter_known_pairs_excluded_from_negative_sampling'] = int(
+            len(ddinter_known_pairs)
+        )
+        input_quality_summary['source_feature_profile_count'] = len(source_feature_lookup)
+        input_quality_summary['source_feature_names'] = source_feature_names
+        write_json(audit_dir / 'input_quality_summary.json', input_quality_summary)
     if EVALUATION_PROTOCOL == 'scaffold_disjoint':
         if NEGATIVE_SAMPLING_PROTOCOL != 'legacy_pre_split_v1':
             raise ValueError(
@@ -2045,14 +2726,15 @@ def main() -> None:
         full_dataset = build_binary_pair_dataset(
             positives, source_col='source', target_col='target', neg_ratio=1.0, seed=SPLIT_SEED,
             negative_sampling_strategy=NEGATIVE_SAMPLING_STRATEGY,
-            known_reported_positive_pairs=all_clean_positives,
+            known_reported_positive_pairs=all_known_reported_pairs,
+            negative_label_evidence=NEGATIVE_LABEL_MEANING,
         )
         dataset_summary = {
             'protocol': 'legacy_pre_split_v1_scaffold_only',
             'effective_positive_pairs': (full_dataset['label'] == 1.0).sum(),
             'sampled_unreported_negative_pairs': (full_dataset['label'] == 0.0).sum(),
             'total_pair_rows_before_split': len(full_dataset),
-            'negative_label_meaning': f'unreported_twosides_sampled_{NEGATIVE_SAMPLING_STRATEGY}',
+            'negative_label_meaning': NEGATIVE_LABEL_MEANING,
         }
         from data_prep.scaffold_splits import create_scaffold_disjoint_splits
 
@@ -2072,24 +2754,26 @@ def main() -> None:
         if NEGATIVE_SAMPLING_PROTOCOL == 'split_aware_standard_v1':
             splits, dataset_summary = create_split_aware_binary_splits(
                 positives,
-                known_reported_positive_pairs=all_clean_positives,
+                known_reported_positive_pairs=all_known_reported_pairs,
                 source_col='source',
                 target_col='target',
                 seed=SPLIT_SEED,
                 negative_sampling_strategy=NEGATIVE_SAMPLING_STRATEGY,
+                negative_label_evidence=NEGATIVE_LABEL_MEANING,
             )
         else:
             full_dataset = build_binary_pair_dataset(
                 positives, source_col='source', target_col='target', neg_ratio=1.0, seed=SPLIT_SEED,
                 negative_sampling_strategy=NEGATIVE_SAMPLING_STRATEGY,
-                known_reported_positive_pairs=all_clean_positives,
+                known_reported_positive_pairs=all_known_reported_pairs,
+                negative_label_evidence=NEGATIVE_LABEL_MEANING,
             )
             dataset_summary = {
                 'protocol': 'legacy_pre_split_v1',
                 'effective_positive_pairs': (full_dataset['label'] == 1.0).sum(),
                 'sampled_unreported_negative_pairs': (full_dataset['label'] == 0.0).sum(),
                 'total_pair_rows_before_split': len(full_dataset),
-                'negative_label_meaning': f'unreported_twosides_sampled_{NEGATIVE_SAMPLING_STRATEGY}',
+                'negative_label_meaning': NEGATIVE_LABEL_MEANING,
             }
             splits = create_splits(
                 full_dataset, drug_a_col='source', drug_b_col='target', seed=SPLIT_SEED
@@ -2153,6 +2837,8 @@ def main() -> None:
         # Training rows helped construct the memory. Excluding their exact
         # pair entry prevents the memory from encoding their own label.
         exclude_query_pair_from_memory=USE_NEIGHBOR_MEMORY,
+        source_feature_lookup=source_feature_lookup if USE_SEVEN_SOURCE_FEATURES else None,
+        seven_branch_feature_lookup=seven_branch_feature_lookup if USE_SEVEN_BRANCH_MODEL else None,
     )
     validation_loader = build_loader(
         splits[validation_split_key],
@@ -2160,6 +2846,8 @@ def main() -> None:
         shuffle=False,
         graph_cache=graph_cache,
         neighbor_memory=neighbor_memory,
+        source_feature_lookup=source_feature_lookup if USE_SEVEN_SOURCE_FEATURES else None,
+        seven_branch_feature_lookup=seven_branch_feature_lookup if USE_SEVEN_BRANCH_MODEL else None,
     )
     posthoc_validation_loader = build_loader(
         splits[posthoc_validation_split_key],
@@ -2167,6 +2855,8 @@ def main() -> None:
         shuffle=False,
         graph_cache=graph_cache,
         neighbor_memory=neighbor_memory,
+        source_feature_lookup=source_feature_lookup if USE_SEVEN_SOURCE_FEATURES else None,
+        seven_branch_feature_lookup=seven_branch_feature_lookup if USE_SEVEN_BRANCH_MODEL else None,
     )
     test_loaders = {
         name: build_loader(
@@ -2175,6 +2865,8 @@ def main() -> None:
             shuffle=False,
             graph_cache=graph_cache,
             neighbor_memory=neighbor_memory,
+            source_feature_lookup=source_feature_lookup if USE_SEVEN_SOURCE_FEATURES else None,
+            seven_branch_feature_lookup=seven_branch_feature_lookup if USE_SEVEN_BRANCH_MODEL else None,
         )
         for name, split_key in test_split_keys.items()
     }
@@ -2208,20 +2900,33 @@ def main() -> None:
             'Posthoc validation is unusable after SMILES validation; adjust the data split.'
         )
 
-    model = AuditDDIModel(
-        in_channels=INPUT_FEATURE_DIM,
-        hidden_channels=HIDDEN_CHANNELS,
-        use_chemberta=USE_CHEMBERTA,
-        architecture_version=MODEL_ARCHITECTURE,
-        edge_feature_dim=(
-            NUM_BOND_FEATURES
-            if USES_EDGE_FEATURES else None
-        ),
-        use_toxicity_pair_features=USE_TOXICITY_PAIR_FEATURES,
-        motif_feature_dim=MOTIF_FEATURE_DIM if USE_MOTIF_FEATURES else None,
-        motif_hidden_channels=MOTIF_HIDDEN_CHANNELS if USE_MOTIF_FEATURES else None,
-        use_neighbor_memory=USE_NEIGHBOR_MEMORY,
-    ).to(DEVICE)
+    if USE_SEVEN_BRANCH_MODEL:
+        model = SevenBranchDDIModel(
+            in_channels=INPUT_FEATURE_DIM,
+            edge_feature_dim=NUM_BOND_FEATURES,
+            hidden_channels=HIDDEN_CHANNELS,
+            branch_dimensions=SEVEN_BRANCH_DIMENSIONS,
+        ).to(DEVICE)
+    else:
+        model = AuditDDIModel(
+            in_channels=INPUT_FEATURE_DIM,
+            hidden_channels=HIDDEN_CHANNELS,
+            use_chemberta=USE_CHEMBERTA,
+            architecture_version=MODEL_ARCHITECTURE,
+            edge_feature_dim=(
+                NUM_BOND_FEATURES
+                if USES_EDGE_FEATURES else None
+            ),
+            use_toxicity_pair_features=USE_TOXICITY_PAIR_FEATURES,
+            gene_feature_dim=SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else 50,
+            gene_hidden_channels=64,
+            use_gene_encoder=USE_SEVEN_SOURCE_FEATURES,
+            use_pdb_encoder=USE_PDB_ENCODER,
+            use_clinical_toxicity=USE_CLINICAL_TOXICITY,
+            motif_feature_dim=MOTIF_FEATURE_DIM if USE_MOTIF_FEATURES else None,
+            motif_hidden_channels=MOTIF_HIDDEN_CHANNELS if USE_MOTIF_FEATURES else None,
+            use_neighbor_memory=USE_NEIGHBOR_MEMORY,
+        ).to(DEVICE)
     pretraining_initialization: dict[str, Any] | None = None
     if PRETRAINED_ENCODER_PATH is not None:
         pretraining_initialization = load_pretrained_edge_aware_encoder(
@@ -2231,7 +2936,9 @@ def main() -> None:
             expected_edge_feature_dim=NUM_BOND_FEATURES,
             expected_hidden_channels=HIDDEN_CHANNELS,
             expected_split_audit={
-                'twosides_edges_sha256': get_file_hash(TWOSIDES_EDGES),
+                'twosides_edges_sha256': get_file_hash(
+                    TWOSIDES_PARQUET if TWOSIDES_PARQUET.is_file() else TWOSIDES_EDGES
+                ),
                 'data_cap': DATA_CAP,
                 'split_seed': SPLIT_SEED,
                 'negative_sampling_strategy': NEGATIVE_SAMPLING_STRATEGY,
@@ -2244,8 +2951,32 @@ def main() -> None:
             'Initialized edge-aware encoder from audited ChEMBL pretraining: '
             f'{PRETRAINED_ENCODER_PATH}'
         )
+    warm_start_checkpoint: dict[str, Any] | None = None
+    warm_start_info: dict[str, Any] | None = None
+    if RESUME_CHECKPOINT_PATH:
+        warm_start_checkpoint, warm_start_info = load_warm_start_checkpoint(
+            RESUME_CHECKPOINT_PATH,
+            model,
+            manifest,
+            split_manifest,
+            RESUME_AFTER_EPOCH,
+        )
+        print(
+            'Warm-started from best saved weights at epoch '
+            f'{warm_start_info["checkpoint_epoch"]}; continuing at epoch '
+            f'{RESUME_AFTER_EPOCH + 1}. Adam and scheduler state will be reinitialized.'
+        )
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
+    if warm_start_info is not None:
+        completed_schedule_steps = RESUME_AFTER_EPOCH // scheduler.step_size
+        resumed_lr = 0.001 * (scheduler.gamma ** completed_schedule_steps)
+        for group in optimizer.param_groups:
+            group['lr'] = resumed_lr
+            group['initial_lr'] = 0.001
+        scheduler.last_epoch = RESUME_AFTER_EPOCH
+        scheduler._step_count = RESUME_AFTER_EPOCH + 1
+        scheduler._last_lr = [resumed_lr for _ in optimizer.param_groups]
     scaler = torch.amp.GradScaler('cuda') if DEVICE.type == 'cuda' else None
     history = {
         'epoch': [],
@@ -2255,11 +2986,46 @@ def main() -> None:
         'f1': [],
         'mcc': [],
         'balanced_accuracy': [],
+        'val_loss': [],
         'threshold': [],
         'learning_rate': [],
     }
-    best_auroc = float('-inf')
-    epochs_without_improvement = 0
+    if warm_start_info is not None and RESUME_HISTORY_PATH:
+        resume_history_file = Path(RESUME_HISTORY_PATH)
+        if not resume_history_file.is_file():
+            raise FileNotFoundError(
+                f'Resume history file does not exist: {resume_history_file}'
+            )
+        history = load_training_history_file(resume_history_file)
+        if not history['epoch'] or int(history['epoch'][-1]) != RESUME_AFTER_EPOCH:
+            raise ValueError(
+                'Resume history must end at AUDITDDI_RESUME_AFTER_EPOCH; '
+                f'history ends at {history["epoch"][-1] if history["epoch"] else "empty"}, '
+                f'configured after-epoch is {RESUME_AFTER_EPOCH}.'
+            )
+        warm_start_info['history_source_path'] = str(resume_history_file)
+        warm_start_info['history_source_sha256'] = get_file_hash(resume_history_file)
+        print(
+            f'Loaded {len(history["epoch"])} saved epoch-history rows; '
+            'the loss plot will retain that recorded history.'
+        )
+    elif warm_start_info is not None:
+        print(
+            'Warning: no AUDITDDI_RESUME_HISTORY_PATH was supplied; this run '
+            'will plot only epochs recorded after the warm start.'
+        )
+    best_auroc = (
+        float(warm_start_info['checkpoint_validation_auroc'])
+        if warm_start_info is not None else float('-inf')
+    )
+    best_epoch = (
+        int(warm_start_info['checkpoint_epoch'])
+        if warm_start_info is not None else 0
+    )
+    epochs_without_improvement = (
+        max(0, RESUME_AFTER_EPOCH - best_epoch)
+        if warm_start_info is not None else 0
+    )
     stopped_early = False
     if DEVICE.type == 'cuda':
         torch.cuda.reset_peak_memory_stats(DEVICE)
@@ -2290,14 +3056,16 @@ def main() -> None:
         stopped_early = True
         history = load_checkpoint_training_history(evaluation_checkpoint)
     else:
-        for epoch in range(1, EPOCHS + 1):
+        for epoch in range(RESUME_AFTER_EPOCH + 1, EPOCHS + 1):
             loss = train_one_epoch(model, train_loader, optimizer, scaler)
             scheduler.step()
+            validation_loss = evaluate_one_epoch_loss(model, validation_loader)
             validation_true, validation_predicted = collect_predictions(model, validation_loader)
             threshold = select_validation_threshold(validation_true, validation_predicted)
             validation_metrics = calculate_metrics(validation_true, validation_predicted, threshold)
             history['epoch'].append(epoch)
             history['loss'].append(loss)
+            history['val_loss'].append(validation_loss)
             history['auroc'].append(validation_metrics['auroc'])
             history['average_precision'].append(validation_metrics['average_precision'])
             history['f1'].append(validation_metrics['f1'])
@@ -2305,8 +3073,14 @@ def main() -> None:
             history['balanced_accuracy'].append(validation_metrics['balanced_accuracy'])
             history['threshold'].append(threshold)
             history['learning_rate'].append(float(optimizer.param_groups[0]['lr']))
+            # Preserve the live curve if the Colab runtime disconnects.
+            live_history_path = RUN_ARTIFACTS_DIR / 'training_history_live.csv'
+            temporary_history_path = live_history_path.with_suffix('.csv.tmp')
+            pd.DataFrame(history).to_csv(temporary_history_path, index=False)
+            temporary_history_path.replace(live_history_path)
             print(
                 f'Epoch {epoch}/{EPOCHS}: loss={loss:.4f}; '
+                f'val_loss={validation_loss:.4f}; '
                 f"selection AUROC={validation_metrics['auroc']:.4f}; "
                 f"PR-AUC={validation_metrics['average_precision']:.4f}; "
                 f"MCC={validation_metrics['mcc']:.4f}; "
@@ -2316,6 +3090,7 @@ def main() -> None:
             )
             if validation_metrics['auroc'] > best_auroc:
                 best_auroc = validation_metrics['auroc']
+                best_epoch = epoch
                 epochs_without_improvement = 0
                 safe_checkpoint_save(
                     {
@@ -2347,8 +3122,29 @@ def main() -> None:
                             neighbor_memory.export_state() if neighbor_memory is not None else None
                         ),
                         'use_toxicity_pair_features': USE_TOXICITY_PAIR_FEATURES,
+                        'use_pdb_encoder': USE_PDB_ENCODER,
+                        'use_clinical_toxicity': USE_CLINICAL_TOXICITY,
+                        'use_gene_encoder': USE_SEVEN_SOURCE_FEATURES,
+                        'gene_feature_dim': SEVEN_SOURCE_FEATURE_DIM if USE_SEVEN_SOURCE_FEATURES else 50,
+                        'source_feature_schema': (
+                            'auditddi_seven_source_profile_51_v1'
+                            if USE_SEVEN_SOURCE_FEATURES else None
+                        ),
+                        'source_feature_names': source_feature_names if USE_SEVEN_SOURCE_FEATURES else None,
+                        'source_feature_lookup': (
+                            {smiles: vector.tolist() for smiles, vector in source_feature_lookup.items()}
+                            if USE_SEVEN_SOURCE_FEATURES else None
+                        ),
+                        'seven_branch_dimensions': SEVEN_BRANCH_DIMENSIONS if USE_SEVEN_BRANCH_MODEL else None,
+                        'seven_branch_feature_names': seven_branch_feature_names if USE_SEVEN_BRANCH_MODEL else None,
+                        'seven_branch_bundle_path': str(SEVEN_BRANCH_FEATURE_BUNDLE) if USE_SEVEN_BRANCH_MODEL else None,
+                        'seven_branch_bundle_sha256': (
+                            get_file_hash(SEVEN_BRANCH_FEATURE_BUNDLE)
+                            if USE_SEVEN_BRANCH_MODEL else None
+                        ),
+                        'seven_branch_hidden_channels': 64 if USE_SEVEN_BRANCH_MODEL else None,
+                        'seven_branch_dropout': 0.25 if USE_SEVEN_BRANCH_MODEL else None,
                         'toxicity_loss_weight': TOXICITY_LOSS_WEIGHT,
-                        'toxicity_head_output': 'logits_v1',
                         'use_chemberta': USE_CHEMBERTA,
                         'auroc': float(best_auroc),
                         'model_selection_metric': 'AUROC',
@@ -2363,6 +3159,7 @@ def main() -> None:
                         'split_seed': SPLIT_SEED,
                         'threshold': threshold,
                         'pretraining_initialization': pretraining_initialization,
+                        'warm_start_provenance': warm_start_info,
                         'evaluation_provenance': evaluation_checkpoint_provenance(
                             manifest, split_manifest
                         ),
@@ -2382,9 +3179,16 @@ def main() -> None:
                 print(
                     'Early stopping: no validation AUROC improvement for '
                     f'{epochs_without_improvement} epochs after epoch {EARLY_STOPPING_MIN_EPOCHS}. '
-                    f'Keeping best checkpoint from epoch {history["epoch"][int(np.argmax(history["auroc"]))]}.'
+                    f'Keeping best checkpoint from epoch {best_epoch}.'
                 )
                 break
+
+        if warm_start_checkpoint is not None and best_epoch == int(warm_start_info['checkpoint_epoch']):
+            # No resumed epoch beat the saved best. Publish that audited model
+            # under the new output path so downstream finalization sees the
+            # selected weights, without overwriting the original checkpoint.
+            warm_start_checkpoint['warm_start_provenance'] = warm_start_info
+            safe_checkpoint_save(warm_start_checkpoint, CHECKPOINT_PATH)
 
     if DEVICE.type == 'cuda':
         torch.cuda.synchronize(DEVICE)
@@ -2415,6 +3219,7 @@ def main() -> None:
         else torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
     )
     model.load_state_dict(checkpoint['model_state_dict'])
+    model_layer_summary = save_model_layer_summary(model, RUN_ARTIFACTS_DIR)
     validation_true, validation_raw_predictions = collect_predictions(
         model, posthoc_validation_loader
     )
@@ -2472,7 +3277,6 @@ def main() -> None:
     if not EVALUATE_ONLY:
         checkpoint['threshold'] = frozen_threshold
         checkpoint['calibration'] = calibration
-        checkpoint['toxicity_head_output'] = 'logits_v1'
         checkpoint['conformal'] = conformal
         checkpoint['use_neighbor_memory'] = USE_NEIGHBOR_MEMORY
         checkpoint['neighbor_memory_state'] = (
@@ -2633,7 +3437,6 @@ def main() -> None:
         )
     evaluation_metrics_summary = save_evaluation_metrics(results, RUN_ARTIFACTS_DIR)
     plot_benchmark_comparison(results, figure_dir)
-    plot_toxicity_bridge_coverage(toxicity_summary, figure_dir)
 
     # =========================================================================
     # Novelty audits — auto-generate all paper artifact figures and JSONs
@@ -2727,6 +3530,7 @@ def main() -> None:
 
     manifest.update({
         'completed_at_utc': datetime.now(timezone.utc).isoformat(),
+        'warm_start': warm_start_info,
         'checkpoint': {
             'path': str(CHECKPOINT_PATH),
             'sha256': checkpoint_hash,
@@ -2751,6 +3555,7 @@ def main() -> None:
             'applicability_domain': applicability_domain_summary,
         },
         'model_summary': model_summary(model),
+        'model_layer_summary': model_layer_summary,
         'pretraining_initialization': pretraining_initialization,
         'evaluation_protocol': evaluation_protocol_summary,
         'efficiency': {
@@ -2766,13 +3571,15 @@ def main() -> None:
             'patience': EARLY_STOPPING_PATIENCE,
             'minimum_epochs': EARLY_STOPPING_MIN_EPOCHS,
             'stopped_early': stopped_early,
-            'completed_epochs': len(history['epoch']),
+            'completed_epochs': (
+                int(history['epoch'][-1]) if history['epoch']
+                else RESUME_AFTER_EPOCH if warm_start_info is not None else 0
+            ),
             'best_epoch': checkpoint['epoch'],
             'model_selection_split': validation_split_key,
             'posthoc_validation_split': posthoc_validation_split_key,
             'posthoc_reserved_before_training': True,
         },
-        'toxicity_bridge': toxicity_summary,
         'input_quality': input_quality_summary,
         'dataset': dataset_summary,
         'graph_cache': graph_cache.summary(),

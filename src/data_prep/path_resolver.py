@@ -5,12 +5,11 @@ and Google Colab runtimes (both primary accounts and multi-account rotations
 using shared Google Drive shortcuts).
 
 Folder Conventions:
-- Google Drive Datasets: ``/content/drive/MyDrive/auditddi-data``
-  (or shortcut at ``/content/drive/.shortcut-targets-by-id/*/auditddi-data``)
-- Google Drive Outputs : ``/content/drive/MyDrive/auditddi-results``
-- Datasets inside ``auditddi-data`` include:
-  TWOSIDES, FAERS, UniProt, BindingDB, PharmGKB, ChEMBL, PubChem, PDB, GEO,
-  STITCH, TCGA, ZINC.
+- Colab dataset folder: ``/content/drive/MyDrive/Projects/auditddi``
+- Dataset root: the folder containing the seven dataset folders
+- Google Drive outputs: ``/content/drive/MyDrive/auditddi-results``
+- Finalized datasets: TWOSIDES, ChEMBL, PubChem, FAERS, DDInter, PharmGKB,
+    and openFDA.
 """
 
 from __future__ import annotations
@@ -42,10 +41,10 @@ def resolve_data_base(configured_path: str | Path | None = None) -> Path:
 
     Supports:
     1. Explicit parameter or AUDITDDI_DATA_BASE / PXDDI_DATA_BASE env vars.
-    2. Colab primary Drive: /content/drive/MyDrive/auditddi-data
-    3. Colab shared shortcut: /content/drive/.shortcut-targets-by-id/*/auditddi-data
-    4. Local paths: ./auditddi-data, Quantum_AI_Pharma/datasets, ./data
-    5. Automatic repair of nested Drive shortcut paths.
+    2. Colab dataset folder: /content/drive/MyDrive/auditddi
+    3. Colab project dataset folder: /content/drive/MyDrive/Projects/auditddi
+    4. Legacy data folders and shared Drive shortcuts.
+    5. Local paths: ./auditddi-data, ./data, or the project root itself.
     """
     candidates: list[Path] = []
 
@@ -70,13 +69,33 @@ def resolve_data_base(configured_path: str | Path | None = None) -> Path:
             f"Configured AUDITDDI_DATA_BASE does not exist or is not a directory: {p}"
         )
 
-    # Priority 2: Google Colab primary path
+    # Priority 2: User's Google Drive dataset folder.
+    colab_data = Path("/content/drive/MyDrive/auditddi")
+    if colab_data.is_dir() and any(
+        (colab_data / name).is_dir() for name in ACTIVE_DATASETS
+    ):
+        return colab_data
+    candidates.append(colab_data)
+
+    # Priority 3: Google Colab project path used by older instructions.
+    colab_project = Path("/content/drive/MyDrive/Projects/auditddi")
+    if colab_project.is_dir() and any(
+        (colab_project / name).is_dir() for name in ACTIVE_DATASETS
+    ):
+        return colab_project
+    candidates.append(colab_project)
+
+    colab_project_data = colab_project / "auditddi-data"
+    if colab_project_data.is_dir():
+        return colab_project_data
+    candidates.append(colab_project_data)
+
     colab_primary = Path("/content/drive/MyDrive/auditddi-data")
     if colab_primary.is_dir():
         return colab_primary
     candidates.append(colab_primary)
 
-    # Priority 3: Google Colab multi-account shared shortcuts
+    # Priority 4: Google Colab multi-account shared shortcuts
     shortcut_base = Path("/content/drive/.shortcut-targets-by-id")
     if shortcut_base.is_dir():
         for pattern in ["*/auditddi-data", "*/AuditDDI-data", "*/auditddi", "*/pxddi-data", "*"]:
@@ -88,18 +107,17 @@ def resolve_data_base(configured_path: str | Path | None = None) -> Path:
                     if "auditddi-data" in mp.name.lower() or (mp / "TWOSIDES").is_dir() or (mp / "twosides").is_dir():
                         return mp
 
-    # Priority 4: Legacy Drive paths
+    # Priority 5: Legacy Drive paths
     for legacy_name in ["auditddi", "pxddi-data", "AuditDDI"]:
         lp = Path("/content/drive/MyDrive") / legacy_name
         if lp.is_dir():
             return lp
 
-    # Priority 5: Local workspace development paths
+    # Priority 6: Local workspace development paths
     local_candidates = [
         PROJECT_ROOT / "auditddi-data",
-        PROJECT_ROOT.parent / "Quantum_AI_Pharma" / "datasets",
-        Path(r"D:\Drug-Drug Interaction\Quantum_AI_Pharma\datasets"),
         PROJECT_ROOT / "data",
+        PROJECT_ROOT,
         Path("auditddi-data"),
     ]
     for lc in local_candidates:
@@ -115,8 +133,8 @@ def resolve_data_base(configured_path: str | Path | None = None) -> Path:
         f"Fix:\n"
         f"  1. In Google Colab, make sure Google Drive is mounted:\n"
         f"     from google.colab import drive; drive.mount('/content/drive')\n"
-        f"  2. Confirm 'auditddi-data' is present in your Drive or added as a shortcut to MyDrive.\n"
-        f"  3. Alternatively, export AUDITDDI_DATA_BASE=/path/to/auditddi-data"
+        f"  2. Confirm the seven dataset folders are inside /content/drive/MyDrive/auditddi.\n"
+        f"  3. Alternatively, export AUDITDDI_DATA_BASE=/path/to/auditddi"
     )
 
 
@@ -147,8 +165,8 @@ def resolve_results_base(configured_path: str | Path | None = None) -> Path:
 
 DATASET_ALIASES: dict[str, list[str]] = {
     "twosides": ["twosides", "TWOSIDES", "TwoSides", "nsides/twosides", "nsides", "NSIDES"],
-    "faers": ["faers", "FAERS", "faeres", "FAERES", "Faers"],
-    "chembl": ["chembl", "chembel", "ChEMBL", "CHEMBL", "p1_targets"],
+    "faers": ["faers", "FAERS", "faeres", "FAERES", "fears", "FEARS", "Faers"],
+    "chembl": ["chembl", "chembel", "ChEMBL", "CHEMBL"],
     "pharmgkb": ["pharmgkb", "pharmagkb", "PharmGKB", "PHARMGKB"],
     "pubchem": ["pubchem", "PubChem", "PUBCHEM"],
     "ddinter": ["ddinter", "DDInter", "DDINTER"],
@@ -157,19 +175,12 @@ DATASET_ALIASES: dict[str, list[str]] = {
 
 ACTIVE_DATASETS = [
     "twosides",
-    "pubchem",
     "chembl",
-    "pharmgkb",
-    "ddinter",
-    "openfda",
+    "pubchem",
     "faers",
-]
-
-LEGACY_EXPANSION_DATASETS = [
-    "UniProt",
-    "BindingDB",
-    "PDB",
-    "GEO",
+    "ddinter",
+    "pharmgkb",
+    "openfda",
 ]
 
 

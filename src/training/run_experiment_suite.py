@@ -89,13 +89,6 @@ EXPERIMENTS = (
         'toxicity_loss_weight': 0.0,
     },
     {
-        'name': 'legacy_gat_multitask',
-        'runner': 'gnn',
-        'architecture': 'legacy_gat_v1',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
-    },
-    {
         'name': 'edge_aware_ddi_only',
         'runner': 'gnn',
         'architecture': 'edge_aware_gat_v2',
@@ -103,18 +96,20 @@ EXPERIMENTS = (
         'toxicity_loss_weight': 0.0,
     },
     {
-        'name': 'edge_aware_multitask',
+        'name': 'seven_branch_ddi_only',
         'runner': 'gnn',
-        'architecture': 'edge_aware_gat_v2',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
+        'architecture': 'auditddi_seven_branch_v1',
+        'use_toxicity_pair_features': False,
+        'toxicity_loss_weight': 0.0,
+        'requires_seven_branch_feature_bundle': True,
+        'requires_chembl_pretrained_encoder': True,
     },
     {
-        'name': 'edge_aware_chembl_pretrained_multitask',
+        'name': 'edge_aware_chembl_pretrained_ddi_only',
         'runner': 'gnn',
         'architecture': 'edge_aware_gat_v2',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
+        'use_toxicity_pair_features': False,
+        'toxicity_loss_weight': 0.0,
         'requires_chembl_pretrained_encoder': True,
     },
     {
@@ -125,13 +120,6 @@ EXPERIMENTS = (
         'toxicity_loss_weight': 0.0,
     },
     {
-        'name': 'motif_edge_aware_multitask',
-        'runner': 'gnn',
-        'architecture': 'motif_edge_aware_gat_v1',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
-    },
-    {
         'name': 'cross_attention_edge_aware_ddi_only',
         'runner': 'gnn',
         'architecture': 'cross_attention_edge_aware_gat_v1',
@@ -139,32 +127,11 @@ EXPERIMENTS = (
         'toxicity_loss_weight': 0.0,
     },
     {
-        'name': 'cross_attention_edge_aware_multitask',
-        'runner': 'gnn',
-        'architecture': 'cross_attention_edge_aware_gat_v1',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
-    },
-    {
         'name': 'graph_fp_fusion_ddi_only',
         'runner': 'gnn',
         'architecture': 'graph_fp_fusion_v1',
         'use_toxicity_pair_features': False,
         'toxicity_loss_weight': 0.0,
-    },
-    {
-        'name': 'graph_fp_fusion_multitask',
-        'runner': 'gnn',
-        'architecture': 'graph_fp_fusion_v1',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
-    },
-    {
-        'name': 'auditddi_memory_fusion_multitask',
-        'runner': 'gnn',
-        'architecture': 'auditddi_memory_fusion_v1',
-        'use_toxicity_pair_features': True,
-        'toxicity_loss_weight': 0.3,
     },
 )
 
@@ -212,9 +179,9 @@ def selected_experiments(requested_names: str | None = None) -> tuple[dict[str, 
 
     Screening runs every ablation once.  The paper preset repeats a classical
     ECFP baseline and directly comparable legacy and edge-aware DDI-only GNNs.
-    Toxicity is a separately labelled ablation because clean labels cover only
-    a subset of the structures.  ``AUDITDDI_EXPERIMENT_NAMES`` can always
-    request a deliberate alternative.
+    DDI experiments use interaction labels and molecular or biological drug
+    features only. Single-drug toxicity is trained in its own workflow.
+    ``AUDITDDI_EXPERIMENT_NAMES`` can request a deliberate DDI candidate.
     """
     by_name = {experiment['name']: experiment for experiment in EXPERIMENTS}
     value = requested_names
@@ -225,6 +192,7 @@ def selected_experiments(requested_names: str | None = None) -> tuple[dict[str, 
             tuple(
                 name for name, experiment in by_name.items()
                 if not experiment.get('requires_chembl_pretrained_encoder', False)
+                and not experiment.get('requires_seven_branch_feature_bundle', False)
             )
             if PRESET == 'screening'
             else (
@@ -719,7 +687,7 @@ def main() -> None:
                     pretraining_path = get_auditddi_env('CHEMBL_PRETRAINED_ENCODER_PATH')
                     if not pretraining_path:
                         raise ValueError(
-                            'edge_aware_chembl_pretrained_multitask requires '
+                            'edge_aware_chembl_pretrained_ddi_only requires '
                             'AUDITDDI_CHEMBL_PRETRAINED_ENCODER_PATH to point to a '
                             'completed audited pretraining checkpoint.'
                         )

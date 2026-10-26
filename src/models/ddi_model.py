@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool
 
 from .encoder import CrossDrugAttention, EdgeAwareMolecularEncoder, MolecularEncoder
-from .toxicity_model import ToxicityHead
 from .patient_context import PatientContextEncoder
 from .protein_target_encoder import ProteinTargetSequenceEncoder
 
@@ -19,6 +18,7 @@ MODEL_ARCHITECTURE_CROSS_ATTENTION_EDGE_AWARE = 'cross_attention_edge_aware_gat_
 MODEL_ARCHITECTURE_GRAPH_FP_FUSION = 'graph_fp_fusion_v1'
 MODEL_ARCHITECTURE_AUDITDDI_MEMORY = 'auditddi_memory_fusion_v1'
 MODEL_ARCHITECTURE_MULTIMODAL = 'auditddi_multimodal_v1'
+MODEL_ARCHITECTURE_SEVEN_BRANCH = 'auditddi_seven_branch_v1'
 MODEL_ARCHITECTURE_ABLATION_GENES = 'auditddi_ablation_genes'
 MODEL_ARCHITECTURE_ABLATION_FAERS = 'auditddi_ablation_faers'
 
@@ -33,6 +33,7 @@ def architecture_uses_edge_features(architecture_version: str) -> bool:
         MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
         MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
         MODEL_ARCHITECTURE_MULTIMODAL,
+        MODEL_ARCHITECTURE_SEVEN_BRANCH,
         MODEL_ARCHITECTURE_ABLATION_GENES,
         MODEL_ARCHITECTURE_ABLATION_FAERS,
     }
@@ -54,6 +55,7 @@ def architecture_requires_fingerprint_features(architecture_version: str) -> boo
         MODEL_ARCHITECTURE_GRAPH_FP_FUSION,
         MODEL_ARCHITECTURE_AUDITDDI_MEMORY,
         MODEL_ARCHITECTURE_MULTIMODAL,
+        MODEL_ARCHITECTURE_SEVEN_BRANCH,
         MODEL_ARCHITECTURE_ABLATION_GENES,
         MODEL_ARCHITECTURE_ABLATION_FAERS,
     }
@@ -63,6 +65,7 @@ def architecture_requires_multimodal_features(architecture_version: str) -> bool
     """Return whether a checkpoint consumes pharmacogenomic gene features."""
     return architecture_version in {
         MODEL_ARCHITECTURE_MULTIMODAL,
+        MODEL_ARCHITECTURE_SEVEN_BRANCH,
         MODEL_ARCHITECTURE_ABLATION_GENES,
     }
 
@@ -70,6 +73,19 @@ def architecture_requires_multimodal_features(architecture_version: str) -> bool
 def model_from_checkpoint(checkpoint):
     """Construct either versioned GNN safely from checkpoint metadata with dimension auto-detection."""
     state_dict = checkpoint.get('model_state_dict', checkpoint)
+    arch = checkpoint.get('architecture_version', MODEL_ARCHITECTURE_LEGACY)
+    if arch == MODEL_ARCHITECTURE_SEVEN_BRANCH:
+        from .seven_branch_ddi import SevenBranchDDIModel
+
+        return SevenBranchDDIModel(
+            in_channels=checkpoint['in_channels'],
+            edge_feature_dim=checkpoint['edge_feature_dim'],
+            hidden_channels=checkpoint['hidden_channels'],
+            branch_dimensions=checkpoint['seven_branch_dimensions'],
+            fingerprint_dim=checkpoint.get('fingerprint_dim', 1024),
+            branch_hidden_channels=checkpoint.get('seven_branch_hidden_channels', 64),
+            dropout=checkpoint.get('seven_branch_dropout', 0.25),
+        )
     classifier_w = state_dict.get('risk_classifier.0.weight')
     use_neighbor_mem = bool(checkpoint.get('use_neighbor_memory', False))
     use_geo = bool(checkpoint.get('use_geo_features', False))
@@ -109,22 +125,19 @@ def model_from_checkpoint(checkpoint):
         if diff in [9, 12, 13, 16, 20, 73, 76, 80]:
             use_inductive = True
 
-    arch = checkpoint.get('architecture_version', MODEL_ARCHITECTURE_LEGACY)
-    use_clin_tox = bool(checkpoint.get('use_clinical_toxicity', arch in {MODEL_ARCHITECTURE_MULTIMODAL, MODEL_ARCHITECTURE_ABLATION_FAERS}))
-
     return AuditDDIModel(
         in_channels=checkpoint['in_channels'],
         hidden_channels=checkpoint['hidden_channels'],
         use_chemberta=checkpoint.get('use_chemberta', False),
         architecture_version=arch,
         edge_feature_dim=checkpoint.get('edge_feature_dim'),
-        use_toxicity_pair_features=checkpoint.get('use_toxicity_pair_features', True),
+        use_toxicity_pair_features=False,
         motif_feature_dim=checkpoint.get('motif_feature_dim'),
         motif_hidden_channels=checkpoint.get('motif_hidden_channels'),
         use_neighbor_memory=use_neighbor_mem,
         gene_feature_dim=checkpoint.get('gene_feature_dim', 50),
         gene_hidden_channels=checkpoint.get('gene_hidden_channels', 64),
-        use_clinical_toxicity=use_clin_tox,
+        use_clinical_toxicity=False,
         num_side_effects=checkpoint.get('num_side_effects', 1),
         use_cross_modal_attention=use_cross_modal,
         use_cross_drug_attention=use_cross_drug,
@@ -197,7 +210,7 @@ class AuditDDIModel(nn.Module):
         use_chemberta=False,
         architecture_version=MODEL_ARCHITECTURE_LEGACY,
         edge_feature_dim=None,
-        use_toxicity_pair_features=True,
+        use_toxicity_pair_features=False,
         motif_feature_dim=None,
         motif_hidden_channels=None,
         use_neighbor_memory=False,
@@ -213,20 +226,14 @@ class AuditDDIModel(nn.Module):
         self.use_cross_modal_attention = use_cross_modal_attention or kwargs.get('use_cross_modal_attention', False)
         self.use_chemberta = use_chemberta
         self.architecture_version = architecture_version
-        self.use_toxicity_pair_features = use_toxicity_pair_features
+        # FAERS toxicity is handled by the separate single-drug pillar and is
+        # deliberately excluded from DDI prediction.
+        self.use_toxicity_pair_features = False
         self.gene_feature_dim = gene_feature_dim
         self.gene_hidden_channels = gene_hidden_channels
         self.memory_dropout = float(kwargs.get('memory_dropout', 0.50))
         self.embedding_noise_std = float(kwargs.get('embedding_noise_std', 0.0))
-        if 'use_clinical_toxicity' in kwargs:
-            self.use_clinical_toxicity = bool(kwargs['use_clinical_toxicity'])
-        elif use_clinical_toxicity is not None:
-            self.use_clinical_toxicity = bool(use_clinical_toxicity)
-        else:
-            self.use_clinical_toxicity = architecture_version in {
-                MODEL_ARCHITECTURE_MULTIMODAL,
-                MODEL_ARCHITECTURE_ABLATION_FAERS,
-            }
+        self.use_clinical_toxicity = False
 
         if use_chemberta:
             from .encoder import MolecularEncoderChemBERTa
@@ -374,7 +381,9 @@ class AuditDDIModel(nn.Module):
             self.pdb_encoder = None
             self.pdb_gate = None
 
-        self.toxicity_head = ToxicityHead(hidden_channels)
+        # Keep the legacy auxiliary-output interface without adding a toxicity
+        # prediction module to DDI-only models.
+        self.toxicity_head = None
         self.patient_encoder = PatientContextEncoder(n_comorbidities, hidden_channels)
         self.uses_multiplicative_fusion = (
             architecture_version != MODEL_ARCHITECTURE_LEGACY
@@ -423,7 +432,7 @@ class AuditDDIModel(nn.Module):
 
         geo_feature_channels = (self.geo_hidden_channels * 2) if (self.geo_encoder is not None) else ((self.geo_dim * 2) if self.use_geo_features else 0)
         self.use_inductive_bio_features = bool(kwargs.get('use_inductive_bio_features', kwargs.get('use_inductive', False)))
-        inductive_channels = 9 if self.use_inductive_bio_features else 0
+        inductive_channels = 8 if self.use_inductive_bio_features else 0
         self.mol_dropout = float(kwargs.get('mol_dropout', 0.15))
         self.use_fusion_norm = bool(kwargs.get('use_fusion_norm', False))
 
@@ -458,7 +467,7 @@ class AuditDDIModel(nn.Module):
             self.pk_residual_head = None
 
         risk_input_channels = pair_embedding_channels * pair_feature_multiplier + (
-            2 if use_toxicity_pair_features else 0
+            2 if self.use_toxicity_pair_features else 0
         ) + (
             3 if self.use_neighbor_memory else 0
         ) + (
@@ -577,6 +586,17 @@ class AuditDDIModel(nn.Module):
         biophysical_b=None,
         **kwargs,
     ):
+        # The seven-source candidate attaches audited per-drug source profiles
+        # to each molecular graph. Keep the legacy call signature unchanged;
+        # explicit gene_a/gene_b arguments still take precedence.
+        if gene_a is None and hasattr(drug_a, 'source_features'):
+            gene_a = drug_a.source_features
+        if gene_b is None and hasattr(drug_b, 'source_features'):
+            gene_b = drug_b.source_features
+        if gene_mask_a is None and hasattr(drug_a, 'source_profile_mask'):
+            gene_mask_a = drug_a.source_profile_mask
+        if gene_mask_b is None and hasattr(drug_b, 'source_profile_mask'):
+            gene_mask_b = drug_b.source_profile_mask
         cross_a: torch.Tensor | None = None
         cross_b: torch.Tensor | None = None
         if self.use_chemberta:
@@ -603,13 +623,12 @@ class AuditDDIModel(nn.Module):
         else:
             ea = self.encoder(drug_a.x, drug_a.edge_index, drug_a.edge_attr, drug_a.batch)
             eb = self.encoder(drug_b.x, drug_b.edge_index, drug_b.edge_attr, drug_b.batch)
-        # Keep raw logits for ``BCEWithLogitsLoss``.  The interaction head still
-        # receives sigmoid-transformed toxicity features, preserving the legacy
-        # checkpoint's interaction-risk computation exactly.
-        toxicity_a_logits = self.toxicity_head(ea)
-        toxicity_b_logits = self.toxicity_head(eb)
-        toxicity_a_probability = torch.sigmoid(toxicity_a_logits)
-        toxicity_b_probability = torch.sigmoid(toxicity_b_logits)
+        # The tuple's legacy auxiliary outputs are zero placeholders; no
+        # toxicity head or toxicity features participate in the DDI forward pass.
+        toxicity_a_logits = ea.new_zeros((ea.size(0), 1))
+        toxicity_b_logits = eb.new_zeros((eb.size(0), 1))
+        toxicity_a_probability = torch.zeros_like(toxicity_a_logits)
+        toxicity_b_probability = torch.zeros_like(toxicity_b_logits)
         if patient is not None:
             g = self.patient_encoder(patient['age_band'], patient['sex'], patient['comorbidities'])
             ea, eb = ea*g, eb*g
@@ -840,18 +859,6 @@ class AuditDDIModel(nn.Module):
             features = [emb_sum, emb_diff, emb_prod]
         else:
             features = [emb_sum, emb_diff]
-        if self.use_toxicity_pair_features:
-            features.extend([
-                (toxicity_a_probability + toxicity_b_probability).unsqueeze(-1),
-                torch.abs(toxicity_a_probability - toxicity_b_probability).unsqueeze(-1),
-            ])
-        if self.use_clinical_toxicity:
-            if clinical_tox_a is not None and clinical_tox_b is not None:
-                cta = clinical_tox_a.float().view(-1)
-                ctb = clinical_tox_b.float().view(-1)
-                features.append(torch.stack([cta + ctb, torch.abs(cta - ctb)], dim=1))
-            else:
-                features.append(torch.zeros((ea.size(0), 2), device=ea.device, dtype=ea.dtype))
 
         if self.use_neighbor_memory:
             if memory_features is None:
@@ -947,13 +954,7 @@ class AuditDDIModel(nn.Module):
             else:
                 inductive_feats.append(torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype))
 
-            # 6. FAERS Adverse Event Severity Product
-            if self.use_clinical_toxicity and clinical_tox_a is not None and clinical_tox_b is not None:
-                inductive_feats.append(clinical_tox_a.float().view(batch_sz, 1) * clinical_tox_b.float().view(batch_sz, 1))
-            else:
-                inductive_feats.append(torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype))
-
-            # 7-9. Joint Modality Availability Flags
+            # 6-8. Joint modality availability flags
             g_ind = (gene_mask_a.view(batch_sz, 1) * gene_mask_b.view(batch_sz, 1)) if (gene_mask_a is not None and gene_mask_b is not None) else torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype)
             t_ind = (target_mask_a.view(batch_sz, 1) * target_mask_b.view(batch_sz, 1)) if (target_mask_a is not None and target_mask_b is not None) else torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype)
             p_ind = (pdb_mask_a.view(batch_sz, 1) * pdb_mask_b.view(batch_sz, 1)) if (pdb_mask_a is not None and pdb_mask_b is not None) else torch.zeros((batch_sz, 1), device=ea.device, dtype=ea.dtype)

@@ -101,6 +101,7 @@ def build_binary_pair_dataset(
     negative_sampling_strategy: str = 'uniform',
     *,
     known_reported_positive_pairs: pd.DataFrame | set[tuple[str, str]] | None = None,
+    negative_label_evidence: str = 'unreported_twosides_sampled',
 ) -> pd.DataFrame:
     """Create an auditable binary dataset from reported and unreported pairs.
 
@@ -184,7 +185,7 @@ def build_binary_pair_dataset(
         ]
     )
     negatives['label'] = 0.0
-    negatives['label_evidence'] = 'unreported_twosides_sampled'
+    negatives['label_evidence'] = negative_label_evidence
     combined = pd.concat([positives, negatives], ignore_index=True)
     return combined.sample(frac=1, random_state=seed).reset_index(drop=True)
 
@@ -385,6 +386,7 @@ def _sample_partition_negatives(
     negative_sampling_strategy: str,
     max_attempt_multiplier: int,
     allow_zero_negatives: bool = False,
+    negative_label_evidence: str = 'unreported_twosides_split_aware_sampled',
 ) -> tuple[pd.DataFrame, set[tuple[str, str]], dict[str, int]]:
     """Sample unique unreported negatives constrained to one split's identities."""
     if positive_frame.empty or neg_ratio == 0:
@@ -487,7 +489,7 @@ def _sample_partition_negatives(
 
     negatives = pd.DataFrame(sorted(sampled_keys), columns=[source_col, target_col])
     negatives['label'] = 0.0
-    negatives['label_evidence'] = 'unreported_twosides_split_aware_sampled'
+    negatives['label_evidence'] = negative_label_evidence
     return negatives, sampled_keys, {
         'requested_negatives': target_negatives,
         'sampled_negatives': len(sampled_keys),
@@ -527,6 +529,8 @@ def create_split_aware_binary_splits(
     negative_sampling_strategy: str = 'degree_matched',
     max_attempt_multiplier: int = 50,
     allow_zero_negatives: bool = False,
+    positive_label_evidence: str = 'reported_twosides',
+    negative_label_evidence: str = 'unreported_twosides_split_aware_sampled',
 ) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     """Construct cold-start splits before sampling their unreported negatives.
 
@@ -542,7 +546,7 @@ def create_split_aware_binary_splits(
         raise ValueError(f'Unsupported negative sampling strategy: {negative_sampling_strategy}')
     positives = positive_pairs[[source_col, target_col]].copy()
     positives[label_col] = 1.0
-    positives['label_evidence'] = 'reported_twosides'
+    positives['label_evidence'] = positive_label_evidence
     positives = deduplicate_unordered_pairs(positives, source_col, target_col, label_col)
     if positives.empty:
         raise ValueError('At least one positive pair is required.')
@@ -588,6 +592,7 @@ def create_split_aware_binary_splits(
             negative_sampling_strategy=negative_sampling_strategy,
             max_attempt_multiplier=max_attempt_multiplier,
             allow_zero_negatives=allow_zero_negatives,
+            negative_label_evidence=negative_label_evidence,
         )
         used_negative_keys.update(negative_keys)
         combined = (
@@ -602,7 +607,7 @@ def create_split_aware_binary_splits(
         }
     audit: dict[str, Any] = {
         'protocol': 'split_aware_unreported_sampling_v1',
-        'negative_label_meaning': 'unreported_twosides_split_aware_sampled',
+        'negative_label_meaning': negative_label_evidence,
         'negative_sampling_strategy': negative_sampling_strategy,
         'negative_ratio': neg_ratio,
         'split_seed': seed,
