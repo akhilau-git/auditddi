@@ -78,6 +78,24 @@ def fit_platt_calibrator(
     logistic_inputs = _logit(raw_scores).reshape(-1, 1)
     estimator = LogisticRegression(solver='lbfgs', random_state=0)
     estimator.fit(logistic_inputs, targets)
+    coefficient = float(estimator.coef_[0, 0])
+    intercept = float(estimator.intercept_[0])
+    if coefficient <= 0.0:
+        # An unconstrained Platt fit can learn a negative slope from a small or
+        # noisy calibration partition. That reverses every score ranking, so a
+        # model with raw AUROC 0.88 can be reported with calibrated AUROC 0.12.
+        # Temperature scaling has a strictly positive scale and preserves the
+        # ranking while still allowing validation-only probability calibration.
+        fallback = fit_temperature_scaling(
+            targets,
+            raw_scores,
+            fitted_on=fitted_on,
+        )
+        if fallback.get('status') == 'fitted':
+            fallback['fallback_reason'] = 'nonpositive_unconstrained_platt_slope'
+            fallback['unconstrained_platt_coefficient'] = coefficient
+            fallback['unconstrained_platt_intercept'] = intercept
+        return fallback
     calibrated_scores = estimator.predict_proba(logistic_inputs)[:, 1]
     return {
         'status': 'fitted',
@@ -85,8 +103,8 @@ def fit_platt_calibrator(
         'fitted_on': fitted_on,
         'input_transform': 'logit_of_clipped_raw_probability',
         'clip_epsilon': SCORE_EPSILON,
-        'coefficient': float(estimator.coef_[0, 0]),
-        'intercept': float(estimator.intercept_[0]),
+        'coefficient': coefficient,
+        'intercept': intercept,
         'fitted_partition_sample_count': int(len(targets)),
         'fitted_partition_brier_raw': float(brier_score_loss(targets, raw_scores)),
         'fitted_partition_brier_calibrated': float(brier_score_loss(targets, calibrated_scores)),
