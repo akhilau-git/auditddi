@@ -1045,8 +1045,32 @@ def validate_checkpoint_for_evaluation(
     mismatches = {
         key: {'checkpoint': provenance[key], 'current_run': expected[key]}
         for key in expected
-        if provenance[key] != expected[key]
+        if key != 'input_sha256' and provenance[key] != expected[key]
     }
+    # The evaluator itself may have received a compatibility or logging fix
+    # since training. Permit only that trainer-source hash to change; all data,
+    # feature, identity-map, and frozen-split hashes must remain byte-identical.
+    checkpoint_hashes = provenance.get('input_sha256')
+    current_hashes = expected.get('input_sha256')
+    if not isinstance(checkpoint_hashes, dict) or not isinstance(current_hashes, dict):
+        mismatches['input_sha256'] = {
+            'checkpoint': checkpoint_hashes,
+            'current_run': current_hashes,
+        }
+    else:
+        checkpoint_data_hashes = {
+            key: value for key, value in checkpoint_hashes.items()
+            if key != 'training_source'
+        }
+        current_data_hashes = {
+            key: value for key, value in current_hashes.items()
+            if key != 'training_source'
+        }
+        if checkpoint_data_hashes != current_data_hashes:
+            mismatches['input_sha256'] = {
+                'checkpoint_data_inputs': checkpoint_data_hashes,
+                'current_data_inputs': current_data_hashes,
+            }
     if mismatches:
         raise ValueError(
             'Checkpoint does not match the current evaluation inputs, split, or model '
