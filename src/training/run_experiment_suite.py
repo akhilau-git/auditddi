@@ -707,6 +707,9 @@ def main() -> None:
             if experiment['runner'] == 'gnn':
                 for key_suffix, val in [
                     ('EPOCHS', str(epochs)),
+                    # A short screening run must not inherit the paper-run
+                    # minimum epoch floor (40), or the trainer rejects it.
+                    ('EARLY_STOPPING_MIN_EPOCHS', str(min(40, epochs))),
                     ('MODEL_ARCHITECTURE', experiment['architecture']),
                     ('USE_TOXICITY_PAIR_FEATURES', str(experiment['use_toxicity_pair_features']).lower()),
                     ('TOXICITY_LOSS_WEIGHT', str(experiment['toxicity_loss_weight'])),
@@ -724,8 +727,11 @@ def main() -> None:
                     environment['AUDITDDI_PRETRAINED_ENCODER_PATH'] = pretraining_path
                     environment['PXDDI_PRETRAINED_ENCODER_PATH'] = pretraining_path
             else:
-                environment['AUDITDDI_ECFP_EPOCHS'] = str(experiment['epochs'])
-                environment['PXDDI_ECFP_EPOCHS'] = str(experiment['epochs'])
+                # Keep the established 30-epoch Morgan cap for longer studies,
+                # while honoring smaller pilot budgets such as 20 epochs.
+                ecfp_epochs = min(int(experiment['epochs']), epochs)
+                environment['AUDITDDI_ECFP_EPOCHS'] = str(ecfp_epochs)
+                environment['PXDDI_ECFP_EPOCHS'] = str(ecfp_epochs)
             training_script = RUNNER_SCRIPTS[experiment['runner']]
             print(f"Running {experiment['name']} seed={seed}; checkpoint={checkpoint_path}")
             subprocess.run([sys.executable, str(training_script)], check=True, env=environment)
